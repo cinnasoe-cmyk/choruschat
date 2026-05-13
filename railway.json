@@ -1,11 +1,20 @@
 {
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "NIXPACKS"
+  "name": "chorus-railway",
+  "version": "2.6.0",
+  "description": "Chorus Railway build with fixed incoming call notifications and direct call socket listeners.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
   },
-  "deploy": {
-    "startCommand": "npm start",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.18.3",
+    "express-session": "^1.18.0",
+    "multer": "^1.4.5-lts.1",
+    "socket.io": "^4.7.5",
+    "sqlite3": "^5.1.7"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

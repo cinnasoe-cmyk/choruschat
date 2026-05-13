@@ -1,0 +1,2 @@
+SESSION_SECRET=change-this-to-a-long-random-secret
+STORAGE_DIR=/app/storage
