@@ -583,7 +583,6 @@ $("createGroupBtn").onclick = async () => {
   }
 };
 
-checkSession();
 
 
 
@@ -1657,3 +1656,188 @@ endCall = function(send = true) {
 $("callModal").addEventListener("click", () => {
   playNextRelayChunk();
 });
+
+
+/* ============================================================
+   PURE RELAY CALL FLOW FIX
+   This disables the broken WebRTC/TURN call flow and uses only
+   Socket.IO relayed audio:
+   voice:call -> voice:incoming -> voice:accept -> voice:accepted
+============================================================ */
+let pureRelayIncoming = null;
+let pureRelayCallingUser = null;
+
+function resetIncomingButtons() {
+  if ($("acceptCallBtn")) {
+    $("acceptCallBtn").disabled = false;
+    $("acceptCallBtn").textContent = "Accept";
+  }
+}
+
+async function startPureRelayCall() {
+  if (!activeChatId) return toast("Open a DM first", "Choose a one-on-one DM before calling.", "warn");
+
+  const users = getCallableUsers(activeChatId);
+  if (!users.length) return toast("Nobody to call", "Add someone to this DM first.", "warn");
+
+  const currentChat = chats.find(c => Number(c.id) === Number(activeChatId));
+  if (currentChat && currentChat.type === "group") {
+    return toast("Group calls coming next", "Relay audio calls currently support one-on-one DMs.", "warn", 7000);
+  }
+
+  const friend = users[0];
+  activeCall.chatId = activeChatId;
+  activeCall.peerUserId = friend.id;
+  activeCall.callType = "relay-audio";
+  pureRelayCallingUser = friend;
+
+  showCallUI("chorus audio call", "calling...", friend);
+  setAudioOnly(true);
+  $("incomingCallBox").classList.add("hidden");
+  $("callQuality").textContent = "relay audio";
+  startCallTone();
+
+  socket.emit("voice:call", {
+    chatId: activeChatId
+  });
+
+  toast("Calling", `Calling ${friend.display_name}...`, "info", 3500);
+}
+
+async function acceptPureRelayCall() {
+  stopCallTone();
+
+  if (!pureRelayIncoming) {
+    return toast("No call to accept", "The incoming call was not found. Ask them to call again.", "warn", 4000);
+  }
+
+  try {
+    const data = pureRelayIncoming;
+
+    activeCall.chatId = data.chatId;
+    activeCall.peerUserId = data.fromUserId;
+    activeCall.incomingFrom = data.fromUser;
+    activeCall.callType = "relay-audio";
+
+    $("incomingCallBox").classList.add("hidden");
+    showCallUI("chorus audio call", "connecting...", data.fromUser);
+    setAudioOnly(true);
+    $("callQuality").textContent = "relay audio";
+
+    socket.emit("voice:accept", {
+      chatId: data.chatId,
+      toUserId: data.fromUserId
+    });
+
+    await startRelayVoice(data.chatId, data.fromUserId);
+    $("callStatus").textContent = "connected";
+    pureRelayIncoming = null;
+  } catch (err) {
+    toast("Could not accept call", err.message || "Microphone permission failed.", "error", 9000);
+    endCall(false);
+  }
+}
+
+function declinePureRelayCall() {
+  stopCallTone();
+
+  if (pureRelayIncoming) {
+    socket.emit("voice:decline", {
+      chatId: pureRelayIncoming.chatId,
+      toUserId: pureRelayIncoming.fromUserId
+    });
+  }
+
+  pureRelayIncoming = null;
+  $("incomingCallBox").classList.add("hidden");
+  $("callModal").classList.add("hidden");
+  resetIncomingButtons();
+}
+
+// Rebind call buttons to pure relay. This is important because the old
+// Accept button was bound to the WebRTC accept function.
+if ($("audioCallBtn")) $("audioCallBtn").onclick = () => startPureRelayCall();
+if ($("screenShareBtn")) $("screenShareBtn").onclick = () => toast("Screen share disabled", "Audio calls use relay mode. Screen share can be rebuilt later with WebRTC.", "warn", 6000);
+if ($("acceptCallBtn")) $("acceptCallBtn").onclick = () => acceptPureRelayCall();
+if ($("declineCallBtn")) $("declineCallBtn").onclick = () => declinePureRelayCall();
+
+const pureRelayOldEndCall = endCall;
+endCall = function(send = true) {
+  stopRelayVoice(send);
+  stopCallTone();
+
+  if (send && activeCall.chatId) {
+    socket.emit("voice:leave", { chatId: activeCall.chatId });
+  }
+
+  pureRelayIncoming = null;
+  resetIncomingButtons();
+  pureRelayOldEndCall(false);
+};
+
+const pureRelayOriginalConnectSocket = connectSocket;
+connectSocket = function() {
+  pureRelayOriginalConnectSocket();
+
+  socket.on("voice:incoming", (data) => {
+    if (relayCallActive || activeCall.chatId || pureRelayIncoming) return;
+
+    pureRelayIncoming = data;
+    activeCall.chatId = data.chatId;
+    activeCall.peerUserId = data.fromUserId;
+    activeCall.incomingFrom = data.fromUser;
+    activeCall.callType = "relay-audio";
+
+    startCallTone();
+    showCallUI("incoming chorus call", "incoming...", data.fromUser);
+    $("incomingCallText").textContent = `${data.fromUser.display_name} is calling you`;
+    $("incomingCallBox").classList.remove("hidden");
+    resetIncomingButtons();
+    setAudioOnly(true);
+    $("callQuality").textContent = "relay audio";
+
+    toast("Incoming call", `${data.fromUser.display_name} is calling you.`, "success", 8000);
+  });
+
+  socket.on("voice:accepted", async (data) => {
+    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
+
+    try {
+      stopCallTone();
+      $("callStatus").textContent = "connecting...";
+      await startRelayVoice(data.chatId, data.fromUserId);
+      $("callStatus").textContent = "connected";
+      $("callQuality").textContent = "relay audio";
+    } catch (err) {
+      toast("Call failed", err.message || "Microphone permission failed.", "error", 9000);
+      endCall(false);
+    }
+  });
+
+  socket.on("voice:declined", (data) => {
+    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
+    toast("Call declined", "They declined your call.", "warn", 4500);
+    endCall(false);
+  });
+
+  socket.on("voice:chunk", (data) => {
+    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
+    if (Number(data.fromUserId) === Number(me.id)) return;
+    enqueueRelayAudio(data.chunk, data.mimeType);
+  });
+
+  socket.on("voice:joined", (data) => {
+    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
+    $("callStatus").textContent = "connected";
+    $("callQuality").textContent = "relay audio";
+  });
+
+  socket.on("voice:left", (data) => {
+    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
+    toast("Call ended", "The other user left the voice call.", "info", 4000);
+    endCall(false);
+  });
+};
+
+// Now start the app only after every call override is installed.
+checkSession();
