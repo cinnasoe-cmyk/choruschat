@@ -721,6 +721,160 @@ io.on("connection", async (socket) => {
 
 
 
+
+  // ─── CHORUS RELAY CALLS V2 ─────────────────────────────
+  // Simple reliable server-routed call events. This does not use WebRTC.
+  socket.on("relay:call", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      const caller = await publicUser(sessionUser.id);
+      const members = await all(
+        `SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?`,
+        [chatId, sessionUser.id]
+      );
+
+      console.log("[relay:call]", {
+        from: sessionUser.id,
+        chatId,
+        targets: members.map((m) => m.user_id)
+      });
+
+      for (const member of members) {
+        io.to(`user:${member.user_id}`).emit("relay:incoming", {
+          chatId,
+          fromUserId: sessionUser.id,
+          fromUser: caller
+        });
+      }
+    } catch (err) {
+      console.error("relay:call error:", err);
+    }
+  });
+
+  socket.on("relay:accept", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+      if (!chatId || !toUserId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      const accepter = await publicUser(sessionUser.id);
+
+      socket.join(`relay:${chatId}`);
+      io.to(`user:${toUserId}`).emit("relay:accepted", {
+        chatId,
+        fromUserId: sessionUser.id,
+        fromUser: accepter
+      });
+
+      console.log("[relay:accept]", {
+        from: sessionUser.id,
+        to: toUserId,
+        chatId
+      });
+    } catch (err) {
+      console.error("relay:accept error:", err);
+    }
+  });
+
+  socket.on("relay:join", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      socket.join(`relay:${chatId}`);
+      socket.to(`relay:${chatId}`).emit("relay:joined", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      console.log("[relay:join]", {
+        user: sessionUser.id,
+        chatId
+      });
+    } catch (err) {
+      console.error("relay:join error:", err);
+    }
+  });
+
+  socket.on("relay:audio", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId || !data.chunk) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      socket.to(`relay:${chatId}`).emit("relay:audio", {
+        chatId,
+        fromUserId: sessionUser.id,
+        chunk: data.chunk,
+        mimeType: data.mimeType || "audio/webm"
+      });
+    } catch (err) {
+      console.error("relay:audio error:", err);
+    }
+  });
+
+  socket.on("relay:end", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId) return;
+
+      socket.leave(`relay:${chatId}`);
+      socket.to(`relay:${chatId}`).emit("relay:end", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      const members = await all(
+        `SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?`,
+        [chatId, sessionUser.id]
+      );
+
+      for (const member of members) {
+        io.to(`user:${member.user_id}`).emit("relay:end", {
+          chatId,
+          fromUserId: sessionUser.id
+        });
+      }
+
+      console.log("[relay:end]", {
+        user: sessionUser.id,
+        chatId
+      });
+    } catch (err) {
+      console.error("relay:end error:", err);
+    }
+  });
+
+  socket.on("relay:decline", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+      if (!chatId || !toUserId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      io.to(`user:${toUserId}`).emit("relay:declined", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      console.log("[relay:decline]", {
+        from: sessionUser.id,
+        to: toUserId,
+        chatId
+      });
+    } catch (err) {
+      console.error("relay:decline error:", err);
+    }
+  });
+
+
   // ─── PURE RELAY CALL SIGNALING ─────────────────────────────
   // WebRTC-free call signaling. This powers the incoming call popup
   // and accept/decline flow for Socket.IO relayed audio.
