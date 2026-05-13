@@ -1,7 +1,7 @@
 {
   "name": "chorus-railway",
-  "version": "3.4.0",
-  "description": "Chorus relay call rebuild with direct relay:* signaling and hardwired client buttons.",
+  "version": "3.5.0",
+  "description": "Chorus relay call connecting fix: caller joins relay room and starts mic immediately.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
