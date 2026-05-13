@@ -590,25 +590,44 @@ checkSession();
 /* CHORUS AUDIO CALLING + SCREEN SHARE
    Requires HTTPS for microphone/camera/screen share on most browsers.
 */
-const rtcConfig = {
+let rtcConfig = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
     { urls: "stun:stun2.l.google.com:19302" },
     { urls: "stun:stun3.l.google.com:19302" },
     { urls: "stun:stun4.l.google.com:19302" }
-
-    // IMPORTANT:
-    // STUN works for many networks, but some Wi-Fi/cellular networks require TURN.
-    // Add your own TURN server here if calls still stay on "connecting":
-    // {
-    //   urls: "turn:YOUR_TURN_DOMAIN:3478",
-    //   username: "YOUR_TURN_USERNAME",
-    //   credential: "YOUR_TURN_PASSWORD"
-    // }
   ],
   iceCandidatePoolSize: 10
 };
+
+async function loadRtcConfig() {
+  try {
+    const data = await api("/api/ice-servers");
+
+    if (data.iceServers && Array.isArray(data.iceServers) && data.iceServers.length) {
+      rtcConfig = {
+        iceServers: data.iceServers,
+        iceCandidatePoolSize: 10
+      };
+
+      if (localStorage.getItem("chorusForceRelay") === "true") {
+        rtcConfig.iceTransportPolicy = "relay";
+      }
+
+      console.log("Loaded ICE servers:", data.source, rtcConfig);
+      return rtcConfig;
+    }
+  } catch (err) {
+    console.warn("Could not load ICE servers:", err);
+  }
+
+  if (localStorage.getItem("chorusForceRelay") === "true") {
+    rtcConfig.iceTransportPolicy = "relay";
+  }
+
+  return rtcConfig;
+}
 
 let activeCall = {
   chatId: null,
@@ -774,7 +793,7 @@ async function flushPendingIce() {
 
 function showCallTroubleshooting(text) {
   $("callStatus").textContent = text;
-  toast("Call connection issue", "If it stays connecting, both users may need a TURN server for this network. Try a different Wi-Fi/hotspot or keep reading the included README.", "warn", 9000);
+  toast("Call needs TURN", "This connection could not go peer-to-peer. Add the TURN variables on Railway, then turn on Force TURN relay in Settings > Audio.", "warn", 12000);
 }
 
 async function startCall(callType = "audio") {
@@ -1360,3 +1379,18 @@ document.addEventListener("click", (event) => {
   const row = event.target.closest(".chat-row, .user-row");
   if (row) document.querySelector(".sidebar")?.classList.remove("mobile-open");
 });
+
+
+/* FORCE TURN RELAY SETTING */
+if ($("forceRelayToggle")) {
+  $("forceRelayToggle").checked = localStorage.getItem("chorusForceRelay") === "true";
+  $("forceRelayToggle").onchange = () => {
+    localStorage.setItem("chorusForceRelay", $("forceRelayToggle").checked ? "true" : "false");
+    toast(
+      $("forceRelayToggle").checked ? "Force TURN enabled" : "Force TURN disabled",
+      "Restart the call for this setting to apply.",
+      "success",
+      5000
+    );
+  };
+}
