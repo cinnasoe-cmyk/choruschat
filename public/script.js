@@ -602,7 +602,7 @@ let rtcConfig = {
 };
 
 async function loadRtcConfig() {
-  const forceRelay = localStorage.getItem("chorusForceRelay") === "true";
+  const forceRelay = false;
 
   try {
     const data = await api("/api/ice-servers");
@@ -1397,7 +1397,7 @@ document.addEventListener("click", (event) => {
 
 /* FORCE TURN RELAY SETTING */
 if ($("forceRelayToggle")) {
-  $("forceRelayToggle").checked = localStorage.getItem("chorusForceRelay") === "true";
+  $("forceRelayToggle").checked = false;
   $("forceRelayToggle").onchange = () => {
     localStorage.setItem("chorusForceRelay", $("forceRelayToggle").checked ? "true" : "false");
     toast(
