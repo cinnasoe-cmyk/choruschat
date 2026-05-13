@@ -1903,7 +1903,9 @@ async function relayV2StartMic(chatId) {
   };
 
   ChorusRelayV2.recorder.start(250);
-  $("callStatus").textContent = "connected";
+  if ($("callStatus").textContent !== "waiting for answer...") {
+    $("callStatus").textContent = "connected";
+  }
   $("callQuality").textContent = "relay audio";
 }
 
@@ -1993,8 +1995,25 @@ async function relayV2Call() {
   $("callQuality").textContent = "relay audio";
   startCallTone();
 
+  try {
+    // Start mic immediately so the caller is already in the relay room.
+    // The audio chunks will only be heard once the friend accepts and joins.
+    await relayV2StartMic(Number(activeChatId));
+    $("callStatus").textContent = "waiting for answer...";
+  } catch (err) {
+    toast("Mic failed", err.message || "Microphone permission failed.", "error", 9000);
+    endCall(false);
+    return;
+  }
+
   socket.emit("relay:call", { chatId: Number(activeChatId) });
   toast("Calling", `Calling ${friend.display_name}...`, "info", 3500);
+
+  setTimeout(() => {
+    if (!$("callModal").classList.contains("hidden") && $("callStatus").textContent === "waiting for answer...") {
+      $("callStatus").textContent = "still ringing...";
+    }
+  }, 12000);
 }
 
 async function relayV2Accept() {
@@ -2074,8 +2093,10 @@ function relayV2WireSocket() {
 
     try {
       stopCallTone();
-      $("callStatus").textContent = "connecting...";
-      await relayV2StartMic(data.chatId);
+      $("callStatus").textContent = "connecting audio...";
+      if (!ChorusRelayV2.recorder || ChorusRelayV2.recorder.state === "inactive") {
+        await relayV2StartMic(data.chatId);
+      }
       $("callStatus").textContent = "connected";
     } catch (err) {
       toast("Call failed", err.message || "Microphone permission failed.", "error", 9000);
@@ -2095,6 +2116,13 @@ function relayV2WireSocket() {
     if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
     if (Number(data.fromUserId) === Number(me.id)) return;
     relayV2EnqueueAudio(data.chunk, data.mimeType);
+  });
+
+  socket.on("relay:joined", (data) => {
+    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
+    stopCallTone();
+    $("callStatus").textContent = "connected";
+    $("callQuality").textContent = "relay audio";
   });
 
   socket.on("relay:end", (data) => {
