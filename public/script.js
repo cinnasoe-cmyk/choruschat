@@ -602,16 +602,25 @@ let rtcConfig = {
 };
 
 async function loadRtcConfig() {
+  const forceRelay = localStorage.getItem("chorusForceRelay") === "true";
+
   try {
     const data = await api("/api/ice-servers");
 
     if (data.iceServers && Array.isArray(data.iceServers) && data.iceServers.length) {
+      const hasTurn = data.hasTurn || data.iceServers.some((server) => JSON.stringify(server.urls || "").includes("turn:"));
+
       rtcConfig = {
         iceServers: data.iceServers,
         iceCandidatePoolSize: 10
       };
 
-      if (localStorage.getItem("chorusForceRelay") === "true") {
+      if (forceRelay) {
+        if (!hasTurn) {
+          toast("TURN is not connected", "Railway is still only returning STUN. Check your METERED variables, redeploy, then refresh.", "error", 12000);
+          throw new Error("Force TURN relay is on, but /api/ice-servers returned no TURN servers.");
+        }
+
         rtcConfig.iceTransportPolicy = "relay";
       }
 
@@ -620,10 +629,15 @@ async function loadRtcConfig() {
     }
   } catch (err) {
     console.warn("Could not load ICE servers:", err);
+
+    if (forceRelay) {
+      toast("TURN failed to load", err.message || "Check Railway variables and redeploy.", "error", 12000);
+      throw err;
+    }
   }
 
-  if (localStorage.getItem("chorusForceRelay") === "true") {
-    rtcConfig.iceTransportPolicy = "relay";
+  if (forceRelay) {
+    throw new Error("Force TURN relay is on, but no TURN server was loaded.");
   }
 
   return rtcConfig;
@@ -856,7 +870,7 @@ async function startCall(callType = "audio") {
     $("callStatus").textContent = "ringing...";
     startCallTone();
   } catch (err) {
-    toast("Call cannot start", err.message, "error", 9000);
+    toast("Call cannot start", err.message || "Check TURN setup and microphone permissions.", "error", 12000);
     endCall(false);
   }
 }
@@ -904,7 +918,7 @@ async function acceptIncomingCall() {
     $("callStatus").textContent = "connecting audio...";
     await flushPendingIce();
   } catch (err) {
-    toast("Could not accept call", err.message, "error", 9000);
+    toast("Could not accept call", err.message || "Check TURN setup and microphone permissions.", "error", 12000);
     declineIncomingCall();
   }
 }
