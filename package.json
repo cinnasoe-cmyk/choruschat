@@ -1,7 +1,7 @@
 {
   "name": "chorus-railway",
-  "version": "2.7.0",
-  "description": "Chorus with fixed server-side WebRTC call signaling so incoming calls reach friends.",
+  "version": "2.8.0",
+  "description": "Chorus with WebRTC ICE queue/audio connection fixes and clearer TURN fallback messaging.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
