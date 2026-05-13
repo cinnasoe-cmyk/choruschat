@@ -730,6 +730,7 @@ io.on("connection", async (socket) => {
       if (!chatId) return;
       if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
 
+      socket.join(`relay:${chatId}`);
       const caller = await publicUser(sessionUser.id);
       const members = await all(
         `SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?`,
