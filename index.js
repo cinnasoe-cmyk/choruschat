@@ -722,6 +722,157 @@ io.on("connection", async (socket) => {
 
 
 
+
+  // ─── CHORUS RELAY V3 CALLS ─────────────────────────────
+  // A clean WebRTC-free call system using only Socket.IO events.
+  socket.on("rv3:call", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      socket.join(`rv3:${chatId}`);
+
+      const caller = await publicUser(sessionUser.id);
+      const members = await all(
+        `SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?`,
+        [chatId, sessionUser.id]
+      );
+
+      console.log("[rv3:call]", {
+        from: sessionUser.id,
+        chatId,
+        targets: members.map((m) => m.user_id)
+      });
+
+      for (const member of members) {
+        io.to(`user:${member.user_id}`).emit("rv3:incoming", {
+          chatId,
+          fromUserId: sessionUser.id,
+          fromUser: caller
+        });
+      }
+    } catch (err) {
+      console.error("rv3:call error:", err);
+    }
+  });
+
+  socket.on("rv3:accept", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+      if (!chatId || !toUserId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      socket.join(`rv3:${chatId}`);
+
+      const accepter = await publicUser(sessionUser.id);
+
+      io.to(`user:${toUserId}`).emit("rv3:accepted", {
+        chatId,
+        fromUserId: sessionUser.id,
+        fromUser: accepter
+      });
+
+      socket.to(`rv3:${chatId}`).emit("rv3:peer-ready", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      console.log("[rv3:accept]", {
+        from: sessionUser.id,
+        to: toUserId,
+        chatId
+      });
+    } catch (err) {
+      console.error("rv3:accept error:", err);
+    }
+  });
+
+  socket.on("rv3:ready", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      socket.join(`rv3:${chatId}`);
+
+      socket.to(`rv3:${chatId}`).emit("rv3:peer-ready", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      console.log("[rv3:ready]", { user: sessionUser.id, chatId });
+    } catch (err) {
+      console.error("rv3:ready error:", err);
+    }
+  });
+
+  socket.on("rv3:audio", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId || !data.chunk) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      socket.to(`rv3:${chatId}`).emit("rv3:audio", {
+        chatId,
+        fromUserId: sessionUser.id,
+        mimeType: data.mimeType || "audio/webm",
+        chunk: data.chunk
+      });
+    } catch (err) {
+      console.error("rv3:audio error:", err);
+    }
+  });
+
+  socket.on("rv3:decline", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+      if (!chatId || !toUserId) return;
+
+      io.to(`user:${toUserId}`).emit("rv3:declined", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      console.log("[rv3:decline]", { from: sessionUser.id, to: toUserId, chatId });
+    } catch (err) {
+      console.error("rv3:decline error:", err);
+    }
+  });
+
+  socket.on("rv3:end", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId) return;
+
+      socket.leave(`rv3:${chatId}`);
+      socket.to(`rv3:${chatId}`).emit("rv3:end", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      const members = await all(
+        `SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?`,
+        [chatId, sessionUser.id]
+      );
+
+      for (const member of members) {
+        io.to(`user:${member.user_id}`).emit("rv3:end", {
+          chatId,
+          fromUserId: sessionUser.id
+        });
+      }
+
+      console.log("[rv3:end]", { user: sessionUser.id, chatId });
+    } catch (err) {
+      console.error("rv3:end error:", err);
+    }
+  });
+
+
   // ─── CHORUS RELAY CALLS V2 ─────────────────────────────
   // Simple reliable server-routed call events. This does not use WebRTC.
   socket.on("relay:call", async (data) => {
