@@ -197,6 +197,54 @@ app.get("/", (req, res) => {
 });
 
 
+
+function normalizeMeteredDomain(value) {
+  if (!value) return "";
+  return String(value)
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "")
+    .replace(/\.metered\.live$/i, "");
+}
+
+let cachedTurnCredential = null;
+let cachedTurnCredentialExpiresAt = 0;
+
+function buildMeteredIceServers(username, credential) {
+  return [
+    { urls: "stun:stun.relay.metered.ca:80" },
+    {
+      urls: "turn:global.relay.metered.ca:80",
+      username,
+      credential
+    },
+    {
+      urls: "turn:global.relay.metered.ca:80?transport=tcp",
+      username,
+      credential
+    },
+    {
+      urls: "turn:global.relay.metered.ca:443",
+      username,
+      credential
+    },
+    {
+      urls: "turns:global.relay.metered.ca:443?transport=tcp",
+      username,
+      credential
+    }
+  ];
+}
+
+function summarizeIceServers(iceServers) {
+  return (iceServers || []).map((server) => ({
+    urls: server.urls,
+    hasUsername: Boolean(server.username),
+    hasCredential: Boolean(server.credential),
+    isTurn: JSON.stringify(server.urls || "").includes("turn:")
+  }));
+}
+
 app.get("/api/ice-servers", async (req, res) => {
   const fallback = [
     { urls: "stun:stun.l.google.com:19302" },
@@ -207,14 +255,29 @@ app.get("/api/ice-servers", async (req, res) => {
   ];
 
   try {
-    const meteredDomain = process.env.METERED_DOMAIN;
-    const meteredApiKey = process.env.METERED_API_KEY;
+    const meteredDomain = normalizeMeteredDomain(process.env.METERED_DOMAIN);
+    const meteredApiKey = process.env.METERED_API_KEY || process.env.TURN_API_KEY;
+    const meteredSecretKey = process.env.METERED_SECRET_KEY || process.env.METERED_SECRET || process.env.TURN_SECRET_KEY;
+    const directUsername = process.env.METERED_USERNAME || process.env.TURN_USERNAME;
+    const directCredential = process.env.METERED_CREDENTIAL || process.env.METERED_PASSWORD || process.env.TURN_PASSWORD || process.env.TURN_CREDENTIAL;
 
+    // Easiest/manual mode: paste username/password from "Show ICE Servers Array" into Railway.
+    if (directUsername && directCredential) {
+      const iceServers = buildMeteredIceServers(directUsername, directCredential);
+      return res.json({
+        iceServers,
+        source: "metered-direct-username-password",
+        hasTurn: true
+      });
+    }
+
+    // API key mode: use the API key from a generated TURN credential.
     if (meteredDomain && meteredApiKey) {
-      const response = await fetch(`https://${meteredDomain}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`);
+      const response = await fetch(`https://${meteredDomain}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(meteredApiKey)}`);
 
       if (!response.ok) {
-        throw new Error(`Metered TURN request failed: ${response.status}`);
+        const text = await response.text();
+        throw new Error(`Metered TURN apiKey request failed: ${response.status} ${text}`);
       }
 
       const iceServers = await response.json();
@@ -222,23 +285,111 @@ app.get("/api/ice-servers", async (req, res) => {
       if (Array.isArray(iceServers) && iceServers.length) {
         return res.json({
           iceServers,
-          source: "metered-turn"
+          source: "metered-api-key",
+          hasTurn: iceServers.some((s) => JSON.stringify(s.urls || "").includes("turn:"))
+        });
+      }
+    }
+
+    // Secret key mode: create a temporary TURN credential on the backend, cache it, then return safe ICE servers.
+    if (meteredDomain && meteredSecretKey) {
+      const now = Date.now();
+
+      if (!cachedTurnCredential || now > cachedTurnCredentialExpiresAt) {
+        const createResponse = await fetch(`https://${meteredDomain}.metered.live/api/v1/turn/credential?secretKey=${encodeURIComponent(meteredSecretKey)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            label: "chorus-auto-turn",
+            expiryInSeconds: 86400
+          })
+        });
+
+        if (!createResponse.ok) {
+          const text = await createResponse.text();
+          throw new Error(`Metered TURN secretKey create failed: ${createResponse.status} ${text}`);
+        }
+
+        cachedTurnCredential = await createResponse.json();
+        cachedTurnCredentialExpiresAt = now + (23 * 60 * 60 * 1000);
+      }
+
+      if (cachedTurnCredential?.username && cachedTurnCredential?.password) {
+        const iceServers = buildMeteredIceServers(cachedTurnCredential.username, cachedTurnCredential.password);
+        return res.json({
+          iceServers,
+          source: "metered-secret-key-auto-created",
+          hasTurn: true
         });
       }
     }
 
     return res.json({
       iceServers: fallback,
-      source: "stun-only"
+      source: "stun-only-no-turn-variables",
+      hasTurn: false
     });
   } catch (err) {
     console.error("/api/ice-servers error:", err);
-    return res.json({
+    return res.status(500).json({
       iceServers: fallback,
-      source: "stun-only-error"
+      source: "stun-only-error",
+      hasTurn: false,
+      error: err.message
     });
   }
 });
+
+app.get("/api/ice-debug", async (req, res) => {
+  const meteredDomain = normalizeMeteredDomain(process.env.METERED_DOMAIN);
+  const hasApiKey = Boolean(process.env.METERED_API_KEY || process.env.TURN_API_KEY);
+  const hasSecretKey = Boolean(process.env.METERED_SECRET_KEY || process.env.METERED_SECRET || process.env.TURN_SECRET_KEY);
+  const hasDirectUsername = Boolean(process.env.METERED_USERNAME || process.env.TURN_USERNAME);
+  const hasDirectCredential = Boolean(process.env.METERED_CREDENTIAL || process.env.METERED_PASSWORD || process.env.TURN_PASSWORD || process.env.TURN_CREDENTIAL);
+
+  try {
+    const result = await new Promise((resolve) => {
+      const fakeReq = {};
+      const fakeRes = {
+        statusCode: 200,
+        status(code) {
+          this.statusCode = code;
+          return this;
+        },
+        json(data) {
+          resolve({ statusCode: this.statusCode, data });
+        }
+      };
+
+      const iceHandler = app._router.stack.find((layer) => layer.route && layer.route.path === "/api/ice-servers")?.route?.stack?.[0]?.handle;
+      if (iceHandler) iceHandler(fakeReq, fakeRes);
+      else resolve({ statusCode: 500, data: { error: "ice handler not found" } });
+    });
+
+    res.json({
+      meteredDomain,
+      hasApiKey,
+      hasSecretKey,
+      hasDirectUsername,
+      hasDirectCredential,
+      source: result.data.source,
+      hasTurn: result.data.hasTurn,
+      error: result.data.error || null,
+      iceServers: summarizeIceServers(result.data.iceServers)
+    });
+  } catch (err) {
+    res.status(500).json({
+      meteredDomain,
+      hasApiKey,
+      hasSecretKey,
+      hasDirectUsername,
+      hasDirectCredential,
+      error: err.message
+    });
+  }
+});
+
+
 
 
 app.get("/api/me", async (req, res) => {
