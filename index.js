@@ -720,6 +720,79 @@ io.on("connection", async (socket) => {
 
 
 
+
+  // ─── PURE RELAY CALL SIGNALING ─────────────────────────────
+  // WebRTC-free call signaling. This powers the incoming call popup
+  // and accept/decline flow for Socket.IO relayed audio.
+  socket.on("voice:call", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      const caller = await publicUser(sessionUser.id);
+      const members = await all(
+        `SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?`,
+        [chatId, sessionUser.id]
+      );
+
+      for (const member of members) {
+        io.to(`user:${member.user_id}`).emit("voice:incoming", {
+          chatId,
+          fromUserId: sessionUser.id,
+          fromUser: caller
+        });
+      }
+
+      console.log(`Relay voice call from user ${sessionUser.id} to chat ${chatId}`);
+    } catch (err) {
+      console.error("voice:call error:", err);
+    }
+  });
+
+  socket.on("voice:accept", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+
+      if (!toUserId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      const accepter = await publicUser(sessionUser.id);
+
+      io.to(`user:${toUserId}`).emit("voice:accepted", {
+        chatId,
+        fromUserId: sessionUser.id,
+        fromUser: accepter
+      });
+
+      console.log(`Relay voice accepted by user ${sessionUser.id} to user ${toUserId} chat ${chatId}`);
+    } catch (err) {
+      console.error("voice:accept error:", err);
+    }
+  });
+
+  socket.on("voice:decline", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+
+      if (!toUserId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      io.to(`user:${toUserId}`).emit("voice:declined", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      console.log(`Relay voice declined by user ${sessionUser.id} to user ${toUserId} chat ${chatId}`);
+    } catch (err) {
+      console.error("voice:decline error:", err);
+    }
+  });
+
+
   // ─── RELAY AUDIO CALLS ─────────────────────────────
   // This is a non-WebRTC fallback. Audio is captured in small Opus/WebM chunks
   // and relayed through Socket.IO. It works on hosts/networks where WebRTC fails.
