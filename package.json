@@ -1,7 +1,7 @@
 {
   "name": "chorus-railway",
-  "version": "2.6.0",
-  "description": "Chorus Railway build with fixed incoming call notifications and direct call socket listeners.",
+  "version": "2.7.0",
+  "description": "Chorus with fixed server-side WebRTC call signaling so incoming calls reach friends.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
