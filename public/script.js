@@ -1409,543 +1409,128 @@ if ($("forceRelayToggle")) {
 }
 
 
-/* ============================================================
-   RELAY AUDIO CALL MODE
-   This replaces WebRTC audio with server-relayed audio chunks.
-   It is less "crisp" than WebRTC but much easier to connect on
-   strict Wi-Fi/cellular networks because it uses your existing
-   HTTPS/WebSocket connection.
-============================================================ */
-let relayRecorder = null;
-let relayStream = null;
-let relayAudioQueue = [];
-let relayPlaying = false;
-let relayCallActive = false;
-let relayPeerUserId = null;
-
-function getSupportedRelayMime() {
-  const options = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/ogg;codecs=opus",
-    "audio/mp4"
-  ];
-
-  for (const option of options) {
-    if (window.MediaRecorder && MediaRecorder.isTypeSupported(option)) return option;
-  }
-
-  return "";
-}
-
-async function startRelayVoice(chatId, peerUserId) {
-  relayPeerUserId = peerUserId || relayPeerUserId;
-  relayCallActive = true;
-
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    throw new Error("Your browser does not allow microphone access here. Use HTTPS and Chrome/Edge/Safari.");
-  }
-
-  if (!relayStream) {
-    relayStream = await getAudioStream();
-  }
-
-  const tracks = relayStream.getAudioTracks();
-  if (!tracks.length) {
-    throw new Error("No microphone track was provided by your browser.");
-  }
-
-  socket.emit("voice:join", { chatId });
-
-  if (relayRecorder && relayRecorder.state !== "inactive") return;
-
-  const mimeType = getSupportedRelayMime();
-  relayRecorder = new MediaRecorder(relayStream, mimeType ? { mimeType } : undefined);
-
-  relayRecorder.ondataavailable = async (event) => {
-    if (!relayCallActive || !event.data || event.data.size <= 0) return;
-
-    const arrayBuffer = await event.data.arrayBuffer();
-
-    socket.emit("voice:chunk", {
-      chatId,
-      mimeType: event.data.type || mimeType || "audio/webm",
-      chunk: arrayBuffer
-    });
-  };
-
-  relayRecorder.onerror = (event) => {
-    console.warn("Relay recorder error:", event);
-    toast("Mic stream error", "Your microphone stream stopped. End and restart the call.", "error", 7000);
-  };
-
-  relayRecorder.start(220);
-
-  $("callStatus").textContent = "connected";
-  $("callQuality").textContent = "relay audio";
-  toast("Relay audio connected", "This call is using server-relayed audio instead of WebRTC.", "success", 4500);
-}
-
-function stopRelayVoice(sendLeave = true) {
-  relayCallActive = false;
-
-  try {
-    if (relayRecorder && relayRecorder.state !== "inactive") relayRecorder.stop();
-  } catch {}
-
-  relayRecorder = null;
-
-  if (relayStream) {
-    relayStream.getTracks().forEach(track => track.stop());
-  }
-
-  relayStream = null;
-
-  if (sendLeave && activeCall.chatId) {
-    socket.emit("voice:leave", { chatId: activeCall.chatId });
-  }
-
-  relayAudioQueue = [];
-  relayPlaying = false;
-}
-
-function enqueueRelayAudio(arrayBuffer, mimeType) {
-  if (!relayCallActive && !$("callModal").classList.contains("hidden")) {
-    relayCallActive = true;
-  }
-
-  relayAudioQueue.push({ arrayBuffer, mimeType: mimeType || "audio/webm" });
-  playNextRelayChunk();
-}
-
-async function playNextRelayChunk() {
-  if (relayPlaying || !relayAudioQueue.length) return;
-
-  relayPlaying = true;
-  const item = relayAudioQueue.shift();
-
-  try {
-    const blob = new Blob([item.arrayBuffer], { type: item.mimeType });
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    audio.volume = (chorusSettings?.outputVolume ?? 100) / 100;
-    audio.playsInline = true;
-
-    audio.onended = () => {
-      URL.revokeObjectURL(url);
-      relayPlaying = false;
-      playNextRelayChunk();
-    };
-
-    audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      relayPlaying = false;
-      playNextRelayChunk();
-    };
-
-    await audio.play();
-  } catch (err) {
-    relayPlaying = false;
-    toast("Tap to enable audio", "Tap anywhere in the call window once so the browser allows audio playback.", "warn", 6000);
-    setTimeout(playNextRelayChunk, 300);
-  }
-}
-
-// Override call starter: send a normal call offer, but don't create WebRTC.
-startCall = async function(callType = "audio") {
-  if (!activeChatId) return toast("Open a chat first", "Choose a one-on-one DM before calling.", "warn");
-
-  const users = getCallableUsers(activeChatId);
-  if (!users.length) return toast("Nobody to call", "Add someone to this DM first.", "warn");
-
-  const currentChat = chats.find(c => Number(c.id) === Number(activeChatId));
-  if (currentChat && currentChat.type === "group") {
-    return toast("Group calls coming next", "Relay audio calls currently support one-on-one DMs.", "warn", 7000);
-  }
-
-  const firstUser = users[0];
-
-  try {
-    activeCall.chatId = activeChatId;
-    activeCall.peerUserId = firstUser.id;
-    activeCall.callType = "relay-audio";
-
-    showCallUI("chorus audio call", "ringing...", firstUser);
-    setAudioOnly(true);
-    $("incomingCallBox").classList.add("hidden");
-    startCallTone();
-
-    // Dummy offer: this powers the existing incoming call popup on the friend's side.
-    socket.emit("call:offer", {
-      chatId: activeChatId,
-      toUserId: firstUser.id,
-      offer: { type: "relay-audio", sdp: "chorus-relay-audio" },
-      callType: "relay-audio"
-    });
-
-    await startRelayVoice(activeChatId, firstUser.id);
-  } catch (err) {
-    toast("Call cannot start", err.message || "Microphone permission failed.", "error", 9000);
-    endCall(false);
-  }
-};
-
-// Override accept: no WebRTC answer needed, just start relay audio and notify caller.
-acceptIncomingCall = async function() {
-  stopCallTone();
-
-  const data = activeCall.incomingOffer;
-  if (!data) {
-    toast("Call is still loading", "Wait one second and tap Accept again.", "warn", 3000);
-    return;
-  }
-
-  try {
-    $("incomingCallBox").classList.add("hidden");
-    activeCall.chatId = data.chatId;
-    activeCall.peerUserId = data.fromUserId;
-    activeCall.callType = "relay-audio";
-
-    socket.emit("call:answer", {
-      chatId: data.chatId,
-      toUserId: data.fromUserId,
-      answer: { type: "relay-audio", sdp: "accepted" }
-    });
-
-    await startRelayVoice(data.chatId, data.fromUserId);
-  } catch (err) {
-    toast("Could not accept call", err.message || "Microphone permission failed.", "error", 9000);
-    declineIncomingCall();
-  }
-};
-
-// Wrap existing endCall so relay audio stops too.
-const chorusOldEndCall = endCall;
-endCall = function(send = true) {
-  stopRelayVoice(send);
-  chorusOldEndCall(send);
-};
-
-// Extra socket listeners for relay audio.
-(function setupRelayAudioSocketPatch() {
-  const oldConnectSocket = connectSocket;
-
-  connectSocket = function() {
-    oldConnectSocket();
-
-    socket.on("voice:chunk", (data) => {
-      if (Number(data.chatId) !== Number(activeCall.chatId)) return;
-      if (Number(data.fromUserId) === Number(me.id)) return;
-      enqueueRelayAudio(data.chunk, data.mimeType);
-    });
-
-    socket.on("voice:joined", (data) => {
-      if (Number(data.chatId) !== Number(activeCall.chatId)) return;
-      $("callStatus").textContent = "connected";
-      $("callQuality").textContent = "relay audio";
-    });
-
-    socket.on("voice:left", (data) => {
-      if (Number(data.chatId) !== Number(activeCall.chatId)) return;
-      toast("Call ended", "The other user left the voice call.", "info", 4000);
-      endCall(false);
-    });
-  };
-})();
-
-$("callModal").addEventListener("click", () => {
-  playNextRelayChunk();
-});
 
 
 /* ============================================================
-   PURE RELAY CALL FLOW FIX
-   This disables the broken WebRTC/TURN call flow and uses only
-   Socket.IO relayed audio:
-   voice:call -> voice:incoming -> voice:accept -> voice:accepted
+   CHORUS RELAY V3 CLEAN CALL SYSTEM
+   This is the only active call system after this point.
+   It avoids WebRTC/TURN completely and uses Socket.IO audio relay.
 ============================================================ */
-let pureRelayIncoming = null;
-let pureRelayCallingUser = null;
-
-function resetIncomingButtons() {
-  if ($("acceptCallBtn")) {
-    $("acceptCallBtn").disabled = false;
-    $("acceptCallBtn").textContent = "Accept";
-  }
-}
-
-async function startPureRelayCall() {
-  if (!activeChatId) return toast("Open a DM first", "Choose a one-on-one DM before calling.", "warn");
-
-  const users = getCallableUsers(activeChatId);
-  if (!users.length) return toast("Nobody to call", "Add someone to this DM first.", "warn");
-
-  const currentChat = chats.find(c => Number(c.id) === Number(activeChatId));
-  if (currentChat && currentChat.type === "group") {
-    return toast("Group calls coming next", "Relay audio calls currently support one-on-one DMs.", "warn", 7000);
-  }
-
-  const friend = users[0];
-  activeCall.chatId = activeChatId;
-  activeCall.peerUserId = friend.id;
-  activeCall.callType = "relay-audio";
-  pureRelayCallingUser = friend;
-
-  showCallUI("chorus audio call", "calling...", friend);
-  setAudioOnly(true);
-  $("incomingCallBox").classList.add("hidden");
-  $("callQuality").textContent = "relay audio";
-  startCallTone();
-
-  socket.emit("voice:call", {
-    chatId: activeChatId
-  });
-
-  toast("Calling", `Calling ${friend.display_name}...`, "info", 3500);
-}
-
-async function acceptPureRelayCall() {
-  stopCallTone();
-
-  if (!pureRelayIncoming) {
-    return toast("No call to accept", "The incoming call was not found. Ask them to call again.", "warn", 4000);
-  }
-
-  try {
-    const data = pureRelayIncoming;
-
-    activeCall.chatId = data.chatId;
-    activeCall.peerUserId = data.fromUserId;
-    activeCall.incomingFrom = data.fromUser;
-    activeCall.callType = "relay-audio";
-
-    $("incomingCallBox").classList.add("hidden");
-    showCallUI("chorus audio call", "connecting...", data.fromUser);
-    setAudioOnly(true);
-    $("callQuality").textContent = "relay audio";
-
-    socket.emit("voice:accept", {
-      chatId: data.chatId,
-      toUserId: data.fromUserId
-    });
-
-    await startRelayVoice(data.chatId, data.fromUserId);
-    $("callStatus").textContent = "connected";
-    pureRelayIncoming = null;
-  } catch (err) {
-    toast("Could not accept call", err.message || "Microphone permission failed.", "error", 9000);
-    endCall(false);
-  }
-}
-
-function declinePureRelayCall() {
-  stopCallTone();
-
-  if (pureRelayIncoming) {
-    socket.emit("voice:decline", {
-      chatId: pureRelayIncoming.chatId,
-      toUserId: pureRelayIncoming.fromUserId
-    });
-  }
-
-  pureRelayIncoming = null;
-  $("incomingCallBox").classList.add("hidden");
-  $("callModal").classList.add("hidden");
-  resetIncomingButtons();
-}
-
-// Rebind call buttons to pure relay. This is important because the old
-// Accept button was bound to the WebRTC accept function.
-if ($("audioCallBtn")) $("audioCallBtn").onclick = () => startPureRelayCall();
-if ($("screenShareBtn")) $("screenShareBtn").onclick = () => toast("Screen share disabled", "Audio calls use relay mode. Screen share can be rebuilt later with WebRTC.", "warn", 6000);
-if ($("acceptCallBtn")) $("acceptCallBtn").onclick = () => acceptPureRelayCall();
-if ($("declineCallBtn")) $("declineCallBtn").onclick = () => declinePureRelayCall();
-
-const pureRelayOldEndCall = endCall;
-endCall = function(send = true) {
-  stopRelayVoice(send);
-  stopCallTone();
-
-  if (send && activeCall.chatId) {
-    socket.emit("voice:leave", { chatId: activeCall.chatId });
-  }
-
-  pureRelayIncoming = null;
-  resetIncomingButtons();
-  pureRelayOldEndCall(false);
-};
-
-const pureRelayOriginalConnectSocket = connectSocket;
-connectSocket = function() {
-  pureRelayOriginalConnectSocket();
-
-  socket.on("voice:incoming", (data) => {
-    if (relayCallActive || activeCall.chatId || pureRelayIncoming) return;
-
-    pureRelayIncoming = data;
-    activeCall.chatId = data.chatId;
-    activeCall.peerUserId = data.fromUserId;
-    activeCall.incomingFrom = data.fromUser;
-    activeCall.callType = "relay-audio";
-
-    startCallTone();
-    showCallUI("incoming chorus call", "incoming...", data.fromUser);
-    $("incomingCallText").textContent = `${data.fromUser.display_name} is calling you`;
-    $("incomingCallBox").classList.remove("hidden");
-    resetIncomingButtons();
-    setAudioOnly(true);
-    $("callQuality").textContent = "relay audio";
-
-    toast("Incoming call", `${data.fromUser.display_name} is calling you.`, "success", 8000);
-  });
-
-  socket.on("voice:accepted", async (data) => {
-    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
-
-    try {
-      stopCallTone();
-      $("callStatus").textContent = "connecting...";
-      await startRelayVoice(data.chatId, data.fromUserId);
-      $("callStatus").textContent = "connected";
-      $("callQuality").textContent = "relay audio";
-    } catch (err) {
-      toast("Call failed", err.message || "Microphone permission failed.", "error", 9000);
-      endCall(false);
-    }
-  });
-
-  socket.on("voice:declined", (data) => {
-    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
-    toast("Call declined", "They declined your call.", "warn", 4500);
-    endCall(false);
-  });
-
-  socket.on("voice:chunk", (data) => {
-    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
-    if (Number(data.fromUserId) === Number(me.id)) return;
-    enqueueRelayAudio(data.chunk, data.mimeType);
-  });
-
-  socket.on("voice:joined", (data) => {
-    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
-    $("callStatus").textContent = "connected";
-    $("callQuality").textContent = "relay audio";
-  });
-
-  socket.on("voice:left", (data) => {
-    if (Number(data.chatId) !== Number(activeCall.chatId)) return;
-    toast("Call ended", "The other user left the voice call.", "info", 4000);
-    endCall(false);
-  });
-};
-
-// Now start the app only after every call override is installed.
-
-
-/* ============================================================
-   CHORUS RELAY CALLS V2 - HARD OVERRIDE
-   This bypasses every older call system and uses direct relay events.
-============================================================ */
-const ChorusRelayV2 = {
-  stream: null,
-  recorder: null,
-  active: false,
+const RV3 = {
   chatId: null,
   peerId: null,
   peerUser: null,
+  incoming: null,
+  stream: null,
+  recorder: null,
+  active: false,
   queue: [],
   playing: false,
-  started: false
+  wired: false
 };
 
-function relayV2Mime() {
-  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
-  for (const type of types) {
+function rv3MimeType() {
+  const list = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  for (const type of list) {
     if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
   }
   return "";
 }
 
-async function relayV2StartMic(chatId) {
-  if (!socket || !socket.connected) throw new Error("Realtime socket is not connected yet. Refresh both browsers.");
+function rv3SetStatus(text) {
+  const el = $("callStatus");
+  if (el) el.textContent = text;
+}
+
+async function rv3StartMic() {
+  if (!socket || !socket.connected) {
+    throw new Error("Realtime is not connected. Refresh both browsers and try again.");
+  }
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    throw new Error("Microphone access is not available. Use the HTTPS Railway/Cloudflare domain.");
+    throw new Error("Microphone is blocked. Use your HTTPS domain and allow microphone access.");
   }
 
-  ChorusRelayV2.chatId = Number(chatId);
-  ChorusRelayV2.active = true;
-
-  if (!ChorusRelayV2.stream) {
-    ChorusRelayV2.stream = await getAudioStream();
+  if (!window.MediaRecorder) {
+    throw new Error("This browser does not support MediaRecorder audio calls.");
   }
 
-  if (!ChorusRelayV2.stream.getAudioTracks().length) {
-    throw new Error("No microphone track was found. Check your browser microphone permission.");
+  if (!RV3.stream) {
+    RV3.stream = await getAudioStream();
   }
 
-  socket.emit("relay:join", { chatId: ChorusRelayV2.chatId });
+  const tracks = RV3.stream.getAudioTracks();
+  if (!tracks.length) {
+    throw new Error("No microphone track was found.");
+  }
 
-  if (ChorusRelayV2.recorder && ChorusRelayV2.recorder.state !== "inactive") return;
+  RV3.active = true;
 
-  const mimeType = relayV2Mime();
-  ChorusRelayV2.recorder = new MediaRecorder(ChorusRelayV2.stream, mimeType ? { mimeType } : undefined);
+  socket.emit("rv3:ready", { chatId: RV3.chatId });
 
-  ChorusRelayV2.recorder.ondataavailable = async (event) => {
-    if (!ChorusRelayV2.active || !event.data || event.data.size < 1) return;
+  if (RV3.recorder && RV3.recorder.state !== "inactive") return;
+
+  const mimeType = rv3MimeType();
+  RV3.recorder = new MediaRecorder(RV3.stream, mimeType ? { mimeType } : undefined);
+
+  RV3.recorder.ondataavailable = async (event) => {
+    if (!RV3.active || !event.data || event.data.size < 1 || !RV3.chatId) return;
+
     const buffer = await event.data.arrayBuffer();
 
-    socket.emit("relay:audio", {
-      chatId: ChorusRelayV2.chatId,
+    socket.emit("rv3:audio", {
+      chatId: RV3.chatId,
       mimeType: event.data.type || mimeType || "audio/webm",
       chunk: buffer
     });
   };
 
-  ChorusRelayV2.recorder.start(250);
-  if ($("callStatus").textContent !== "waiting for answer...") {
-    $("callStatus").textContent = "connected";
-  }
-  $("callQuality").textContent = "relay audio";
+  RV3.recorder.onerror = (event) => {
+    console.warn("RV3 recorder error:", event);
+    toast("Microphone stopped", "End the call and try again.", "error", 6000);
+  };
+
+  RV3.recorder.start(300);
 }
 
-function relayV2Stop(send = true) {
-  ChorusRelayV2.active = false;
+function rv3Stop(send = true) {
+  RV3.active = false;
 
   try {
-    if (ChorusRelayV2.recorder && ChorusRelayV2.recorder.state !== "inactive") ChorusRelayV2.recorder.stop();
+    if (RV3.recorder && RV3.recorder.state !== "inactive") RV3.recorder.stop();
   } catch {}
 
-  ChorusRelayV2.recorder = null;
+  RV3.recorder = null;
 
-  if (ChorusRelayV2.stream) {
-    ChorusRelayV2.stream.getTracks().forEach((track) => track.stop());
+  if (RV3.stream) {
+    RV3.stream.getTracks().forEach((track) => track.stop());
   }
 
-  ChorusRelayV2.stream = null;
+  RV3.stream = null;
 
-  if (send && ChorusRelayV2.chatId && socket) {
-    socket.emit("relay:end", { chatId: ChorusRelayV2.chatId });
+  if (send && RV3.chatId && socket) {
+    socket.emit("rv3:end", { chatId: RV3.chatId });
   }
 
-  ChorusRelayV2.chatId = null;
-  ChorusRelayV2.peerId = null;
-  ChorusRelayV2.peerUser = null;
-  ChorusRelayV2.queue = [];
-  ChorusRelayV2.playing = false;
+  RV3.chatId = null;
+  RV3.peerId = null;
+  RV3.peerUser = null;
+  RV3.incoming = null;
+  RV3.queue = [];
+  RV3.playing = false;
 }
 
-function relayV2EnqueueAudio(chunk, mimeType) {
-  ChorusRelayV2.queue.push({ chunk, mimeType: mimeType || "audio/webm" });
-  relayV2PlayNext();
+function rv3QueueAudio(chunk, mimeType) {
+  RV3.queue.push({ chunk, mimeType: mimeType || "audio/webm" });
+  rv3PlayNext();
 }
 
-async function relayV2PlayNext() {
-  if (ChorusRelayV2.playing || !ChorusRelayV2.queue.length) return;
+async function rv3PlayNext() {
+  if (RV3.playing || !RV3.queue.length) return;
 
-  ChorusRelayV2.playing = true;
+  RV3.playing = true;
 
-  const item = ChorusRelayV2.queue.shift();
+  const item = RV3.queue.shift();
   const blob = new Blob([item.chunk], { type: item.mimeType });
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);
@@ -1954,8 +1539,8 @@ async function relayV2PlayNext() {
 
   const done = () => {
     URL.revokeObjectURL(url);
-    ChorusRelayV2.playing = false;
-    relayV2PlayNext();
+    RV3.playing = false;
+    rv3PlayNext();
   };
 
   audio.onended = done;
@@ -1964,13 +1549,13 @@ async function relayV2PlayNext() {
   try {
     await audio.play();
   } catch (err) {
-    ChorusRelayV2.queue.unshift(item);
-    ChorusRelayV2.playing = false;
-    toast("Tap call window", "Your browser blocked audio playback. Tap inside the call window once.", "warn", 6000);
+    RV3.queue.unshift(item);
+    RV3.playing = false;
+    toast("Tap call window", "Tap inside the call window once to allow audio playback.", "warn", 5000);
   }
 }
 
-async function relayV2Call() {
+async function rv3Call() {
   if (!activeChatId) return toast("Open a DM first", "Choose a one-on-one DM before calling.", "warn");
 
   const users = getCallableUsers(activeChatId);
@@ -1982,98 +1567,98 @@ async function relayV2Call() {
   }
 
   const friend = users[0];
-  ChorusRelayV2.chatId = Number(activeChatId);
-  ChorusRelayV2.peerId = friend.id;
-  ChorusRelayV2.peerUser = friend;
 
-  activeCall.chatId = Number(activeChatId);
+  RV3.chatId = Number(activeChatId);
+  RV3.peerId = friend.id;
+  RV3.peerUser = friend;
+
+  activeCall.chatId = RV3.chatId;
   activeCall.peerUserId = friend.id;
 
-  showCallUI("chorus audio call", "calling...", friend);
+  showCallUI("chorus audio call", "starting mic...", friend);
   setAudioOnly(true);
   $("incomingCallBox").classList.add("hidden");
   $("callQuality").textContent = "relay audio";
-  startCallTone();
 
   try {
-    // Start mic immediately so the caller is already in the relay room.
-    // The audio chunks will only be heard once the friend accepts and joins.
-    await relayV2StartMic(Number(activeChatId));
-    $("callStatus").textContent = "waiting for answer...";
+    await rv3StartMic();
+
+    rv3SetStatus("waiting for answer...");
+    startCallTone();
+
+    socket.emit("rv3:call", { chatId: RV3.chatId });
+    toast("Calling", `Calling ${friend.display_name}...`, "info", 3500);
   } catch (err) {
-    toast("Mic failed", err.message || "Microphone permission failed.", "error", 9000);
-    endCall(false);
-    return;
-  }
-
-  socket.emit("relay:call", { chatId: Number(activeChatId) });
-  toast("Calling", `Calling ${friend.display_name}...`, "info", 3500);
-
-  setTimeout(() => {
-    if (!$("callModal").classList.contains("hidden") && $("callStatus").textContent === "waiting for answer...") {
-      $("callStatus").textContent = "still ringing...";
-    }
-  }, 12000);
-}
-
-async function relayV2Accept() {
-  const incoming = ChorusRelayV2.incoming;
-  if (!incoming) return toast("No call found", "Ask them to call again.", "warn");
-
-  try {
-    stopCallTone();
-
-    ChorusRelayV2.chatId = Number(incoming.chatId);
-    ChorusRelayV2.peerId = incoming.fromUserId;
-    ChorusRelayV2.peerUser = incoming.fromUser;
-
-    activeCall.chatId = Number(incoming.chatId);
-    activeCall.peerUserId = incoming.fromUserId;
-
-    $("incomingCallBox").classList.add("hidden");
-    showCallUI("chorus audio call", "connecting...", incoming.fromUser);
-    setAudioOnly(true);
-    $("callQuality").textContent = "relay audio";
-
-    socket.emit("relay:accept", {
-      chatId: Number(incoming.chatId),
-      toUserId: incoming.fromUserId
-    });
-
-    await relayV2StartMic(incoming.chatId);
-    $("callStatus").textContent = "connected";
-    ChorusRelayV2.incoming = null;
-  } catch (err) {
-    toast("Could not accept call", err.message || "Microphone permission failed.", "error", 9000);
-    relayV2Stop(true);
+    toast("Call failed", err.message || "Microphone permission failed.", "error", 9000);
+    rv3Stop(false);
     $("callModal").classList.add("hidden");
   }
 }
 
-function relayV2Decline() {
+async function rv3Accept() {
+  if (!RV3.incoming) return toast("No call found", "Ask them to call again.", "warn", 4000);
+
+  const incoming = RV3.incoming;
+
+  RV3.chatId = Number(incoming.chatId);
+  RV3.peerId = incoming.fromUserId;
+  RV3.peerUser = incoming.fromUser;
+
+  activeCall.chatId = RV3.chatId;
+  activeCall.peerUserId = incoming.fromUserId;
+
+  stopCallTone();
+  $("incomingCallBox").classList.add("hidden");
+  showCallUI("chorus audio call", "starting mic...", incoming.fromUser);
+  setAudioOnly(true);
+  $("callQuality").textContent = "relay audio";
+
+  try {
+    await rv3StartMic();
+
+    socket.emit("rv3:accept", {
+      chatId: RV3.chatId,
+      toUserId: incoming.fromUserId
+    });
+
+    rv3SetStatus("connected");
+    toast("Connected", "Relay audio call connected.", "success", 2500);
+    RV3.incoming = null;
+  } catch (err) {
+    toast("Could not accept", err.message || "Microphone permission failed.", "error", 9000);
+    rv3Stop(true);
+    $("callModal").classList.add("hidden");
+  }
+}
+
+function rv3Decline() {
   stopCallTone();
 
-  if (ChorusRelayV2.incoming) {
-    socket.emit("relay:decline", {
-      chatId: Number(ChorusRelayV2.incoming.chatId),
-      toUserId: ChorusRelayV2.incoming.fromUserId
+  if (RV3.incoming) {
+    socket.emit("rv3:decline", {
+      chatId: Number(RV3.incoming.chatId),
+      toUserId: RV3.incoming.fromUserId
     });
   }
 
-  ChorusRelayV2.incoming = null;
+  RV3.incoming = null;
   $("incomingCallBox").classList.add("hidden");
   $("callModal").classList.add("hidden");
 }
 
-function relayV2WireSocket() {
-  if (!socket || socket._chorusRelayV2Wired) return;
-  socket._chorusRelayV2Wired = true;
+function rv3WireSocket() {
+  if (!socket || RV3.wired) return;
+  RV3.wired = true;
 
-  socket.on("relay:incoming", (data) => {
-    console.log("[relay:incoming]", data);
+  socket.on("rv3:incoming", (data) => {
+    console.log("[rv3:incoming]", data);
 
-    ChorusRelayV2.incoming = data;
-    activeCall.chatId = Number(data.chatId);
+    RV3.incoming = data;
+    RV3.chatId = Number(data.chatId);
+    RV3.peerId = data.fromUserId;
+    RV3.peerUser = data.fromUser;
+
+    activeCall.chatId = RV3.chatId;
     activeCall.peerUserId = data.fromUserId;
 
     startCallTone();
@@ -2086,85 +1671,70 @@ function relayV2WireSocket() {
     toast("Incoming call", `${data.fromUser.display_name} is calling you.`, "success", 9000);
   });
 
-  socket.on("relay:accepted", async (data) => {
-    console.log("[relay:accepted]", data);
+  socket.on("rv3:accepted", (data) => {
+    console.log("[rv3:accepted]", data);
+    if (RV3.chatId && Number(data.chatId) !== Number(RV3.chatId)) return;
 
-    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
-
-    try {
-      stopCallTone();
-      $("callStatus").textContent = "connecting audio...";
-      if (!ChorusRelayV2.recorder || ChorusRelayV2.recorder.state === "inactive") {
-        await relayV2StartMic(data.chatId);
-      }
-      $("callStatus").textContent = "connected";
-    } catch (err) {
-      toast("Call failed", err.message || "Microphone permission failed.", "error", 9000);
-      relayV2Stop(true);
-      $("callModal").classList.add("hidden");
-    }
-  });
-
-  socket.on("relay:declined", (data) => {
-    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
-    toast("Call declined", "They declined your call.", "warn", 4500);
-    relayV2Stop(false);
-    $("callModal").classList.add("hidden");
-  });
-
-  socket.on("relay:audio", (data) => {
-    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
-    if (Number(data.fromUserId) === Number(me.id)) return;
-    relayV2EnqueueAudio(data.chunk, data.mimeType);
-  });
-
-  socket.on("relay:joined", (data) => {
-    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
     stopCallTone();
-    $("callStatus").textContent = "connected";
+    rv3SetStatus("connected");
+    $("callQuality").textContent = "relay audio";
+    toast("Connected", "Relay audio call connected.", "success", 2500);
+  });
+
+  socket.on("rv3:peer-ready", (data) => {
+    console.log("[rv3:peer-ready]", data);
+    if (RV3.chatId && Number(data.chatId) !== Number(RV3.chatId)) return;
+
+    stopCallTone();
+    rv3SetStatus("connected");
     $("callQuality").textContent = "relay audio";
   });
 
-  socket.on("relay:end", (data) => {
-    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
+  socket.on("rv3:audio", (data) => {
+    if (RV3.chatId && Number(data.chatId) !== Number(RV3.chatId)) return;
+    if (Number(data.fromUserId) === Number(me.id)) return;
+    rv3QueueAudio(data.chunk, data.mimeType);
+  });
+
+  socket.on("rv3:declined", (data) => {
+    if (RV3.chatId && Number(data.chatId) !== Number(RV3.chatId)) return;
+    toast("Call declined", "They declined your call.", "warn", 4000);
+    rv3Stop(false);
+    $("callModal").classList.add("hidden");
+  });
+
+  socket.on("rv3:end", (data) => {
+    if (RV3.chatId && Number(data.chatId) !== Number(RV3.chatId)) return;
     toast("Call ended", "The other user ended the call.", "info", 3500);
-    relayV2Stop(false);
+    rv3Stop(false);
     $("callModal").classList.add("hidden");
   });
 }
 
-const chorusConnectSocketBeforeRelayV2 = connectSocket;
+const chorusOriginalConnectSocketRV3 = connectSocket;
 connectSocket = function() {
-  chorusConnectSocketBeforeRelayV2();
-  setTimeout(relayV2WireSocket, 50);
+  chorusOriginalConnectSocketRV3();
+  setTimeout(rv3WireSocket, 50);
 };
 
-const chorusEndCallBeforeRelayV2 = endCall;
+const chorusOriginalEndCallRV3 = endCall;
 endCall = function(send = true) {
-  relayV2Stop(send);
+  rv3Stop(send);
   stopCallTone();
-  chorusEndCallBeforeRelayV2(false);
+  chorusOriginalEndCallRV3(false);
 };
 
-window.addEventListener("load", () => {
-  setTimeout(() => {
-    const audioBtn = $("audioCallBtn");
-    const acceptBtn = $("acceptCallBtn");
-    const declineBtn = $("declineCallBtn");
-    const endBtn = $("endCallBtn");
-    const screenBtn = $("screenShareBtn");
-    const callModal = $("callModal");
+function rv3WireButtons() {
+  if ($("audioCallBtn")) $("audioCallBtn").onclick = rv3Call;
+  if ($("acceptCallBtn")) $("acceptCallBtn").onclick = rv3Accept;
+  if ($("declineCallBtn")) $("declineCallBtn").onclick = rv3Decline;
+  if ($("endCallBtn")) $("endCallBtn").onclick = () => endCall(true);
+  if ($("screenShareBtn")) $("screenShareBtn").onclick = () => toast("Screen share disabled", "This relay version is audio-only.", "warn", 6000);
+  if ($("callModal")) $("callModal").addEventListener("click", rv3PlayNext);
+}
 
-    if (audioBtn) audioBtn.onclick = relayV2Call;
-    if (acceptBtn) acceptBtn.onclick = relayV2Accept;
-    if (declineBtn) declineBtn.onclick = relayV2Decline;
-    if (endBtn) endBtn.onclick = () => endCall(true);
-    if (screenBtn) screenBtn.onclick = () => toast("Screen share disabled", "Audio relay mode does not support screen share yet.", "warn", 6000);
-    if (callModal) callModal.addEventListener("click", relayV2PlayNext);
+rv3WireButtons();
+window.addEventListener("load", rv3WireButtons);
 
-    console.log("Chorus Relay V2 wired");
-  }, 250);
-});
-
-// Start the app after all relay overrides are installed.
+// Start the app after the clean V3 relay system is installed.
 checkSession();
