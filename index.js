@@ -196,6 +196,51 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
+
+app.get("/api/ice-servers", async (req, res) => {
+  const fallback = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" }
+  ];
+
+  try {
+    const meteredDomain = process.env.METERED_DOMAIN;
+    const meteredApiKey = process.env.METERED_API_KEY;
+
+    if (meteredDomain && meteredApiKey) {
+      const response = await fetch(`https://${meteredDomain}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`);
+
+      if (!response.ok) {
+        throw new Error(`Metered TURN request failed: ${response.status}`);
+      }
+
+      const iceServers = await response.json();
+
+      if (Array.isArray(iceServers) && iceServers.length) {
+        return res.json({
+          iceServers,
+          source: "metered-turn"
+        });
+      }
+    }
+
+    return res.json({
+      iceServers: fallback,
+      source: "stun-only"
+    });
+  } catch (err) {
+    console.error("/api/ice-servers error:", err);
+    return res.json({
+      iceServers: fallback,
+      source: "stun-only-error"
+    });
+  }
+});
+
+
 app.get("/api/me", async (req, res) => {
   if (!req.session.user) return res.json({ user: null });
   const user = await publicUser(req.session.user.id);
