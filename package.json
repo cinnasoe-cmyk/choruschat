@@ -1,7 +1,7 @@
 {
   "name": "chorus-railway",
-  "version": "3.5.0",
-  "description": "Chorus relay call connecting fix: caller joins relay room and starts mic immediately.",
+  "version": "3.6.0",
+  "description": "Chorus Relay V3 clean call system with no older call-flow conflicts.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
