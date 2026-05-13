@@ -594,8 +594,20 @@ const rtcConfig = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun2.l.google.com:19302" }
-  ]
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" }
+
+    // IMPORTANT:
+    // STUN works for many networks, but some Wi-Fi/cellular networks require TURN.
+    // Add your own TURN server here if calls still stay on "connecting":
+    // {
+    //   urls: "turn:YOUR_TURN_DOMAIN:3478",
+    //   username: "YOUR_TURN_USERNAME",
+    //   credential: "YOUR_TURN_PASSWORD"
+    // }
+  ],
+  iceCandidatePoolSize: 10
 };
 
 let activeCall = {
@@ -608,7 +620,8 @@ let activeCall = {
   incomingOffer: null,
   incomingFrom: null,
   isMuted: false,
-  cameraOff: false
+  cameraOff: false,
+  pendingIce: []
 };
 
 function getChatOtherUser(chatId) {
@@ -684,6 +697,11 @@ function createPeerConnection(peerUserId, chatId) {
   pc.ontrack = (event) => {
     const remoteVideo = $("remoteVideo");
     remoteVideo.srcObject = event.streams[0];
+    remoteVideo.muted = false;
+    remoteVideo.volume = (chorusSettings?.outputVolume ?? 100) / 100;
+    remoteVideo.play().catch(() => {
+      toast("Tap the call window", "Your browser blocked autoplay audio. Click/tap anywhere on the call window to start audio.", "warn", 7000);
+    });
 
     const hasVideo = event.streams[0].getVideoTracks().length > 0;
     setAudioOnly(!hasVideo);
@@ -691,14 +709,55 @@ function createPeerConnection(peerUserId, chatId) {
     $("callQuality").textContent = hasVideo ? "HD screen" : "crisp audio";
   };
 
+  pc.oniceconnectionstatechange = () => {
+    console.log("ICE state:", pc.iceConnectionState);
+    if (pc.iceConnectionState === "checking") $("callStatus").textContent = "connecting audio...";
+    if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+      stopCallTone();
+      $("callStatus").textContent = "connected";
+    }
+    if (pc.iceConnectionState === "failed") {
+      showCallTroubleshooting("connection failed");
+    }
+  };
+
   pc.onconnectionstatechange = () => {
-    $("callStatus").textContent = pc.connectionState;
-    if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
-      if (pc.connectionState !== "closed") endCall(false);
+    console.log("Peer state:", pc.connectionState);
+    if (pc.connectionState === "connecting") $("callStatus").textContent = "connecting audio...";
+    if (pc.connectionState === "connected") {
+      stopCallTone();
+      $("callStatus").textContent = "connected";
+    }
+    if (["failed", "disconnected"].includes(pc.connectionState)) {
+      showCallTroubleshooting(pc.connectionState);
+    }
+    if (pc.connectionState === "closed") {
+      $("callStatus").textContent = "closed";
     }
   };
 
   return pc;
+}
+
+
+async function flushPendingIce() {
+  if (!activeCall.peer || !activeCall.pendingIce || !activeCall.pendingIce.length) return;
+
+  const queued = [...activeCall.pendingIce];
+  activeCall.pendingIce = [];
+
+  for (const candidate of queued) {
+    try {
+      await activeCall.peer.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (err) {
+      console.warn("Queued ICE candidate failed:", err);
+    }
+  }
+}
+
+function showCallTroubleshooting(text) {
+  $("callStatus").textContent = text;
+  toast("Call connection issue", "If it stays connecting, both users may need a TURN server for this network. Try a different Wi-Fi/hotspot or keep reading the included README.", "warn", 9000);
 }
 
 async function startCall(callType = "audio") {
@@ -788,6 +847,7 @@ async function acceptIncomingCall() {
     activeCall.localStream.getTracks().forEach(track => pc.addTrack(track, activeCall.localStream));
 
     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+    await flushPendingIce();
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
@@ -797,7 +857,8 @@ async function acceptIncomingCall() {
       answer
     });
 
-    $("callStatus").textContent = "connecting...";
+    $("callStatus").textContent = "connecting audio...";
+    await flushPendingIce();
   } catch (err) {
     toast("Could not accept call", err.message, "error", 9000);
     declineIncomingCall();
@@ -912,7 +973,8 @@ function resetCallState() {
     incomingOffer: null,
     incomingFrom: null,
     isMuted: false,
-    cameraOff: false
+    cameraOff: false,
+    pendingIce: []
   };
 }
 
@@ -978,11 +1040,20 @@ connectSocket = function() {
   });
 
   socket.on("call:ice", async (data) => {
-    if (!activeCall.peer || !data.candidate) return;
+    if (!data.candidate) return;
+
+    if (!activeCall.peer || !activeCall.peer.remoteDescription) {
+      activeCall.pendingIce = activeCall.pendingIce || [];
+      activeCall.pendingIce.push(data.candidate);
+      return;
+    }
+
     try {
       await activeCall.peer.addIceCandidate(new RTCIceCandidate(data.candidate));
     } catch (err) {
       console.warn("ICE candidate failed:", err);
+      activeCall.pendingIce = activeCall.pendingIce || [];
+      activeCall.pendingIce.push(data.candidate);
     }
   });
 
@@ -1228,3 +1299,10 @@ setInterval(() => {
   const remote = $("remoteVideo");
   if (remote) remote.volume = chorusSettings.outputVolume / 100;
 }, 1000);
+
+
+// Some browsers block remote audio autoplay until the user taps/clicks once.
+$("callModal").addEventListener("click", () => {
+  const remote = $("remoteVideo");
+  if (remote && remote.srcObject) remote.play().catch(() => {});
+});
