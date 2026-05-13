@@ -522,6 +522,144 @@ io.on("connection", async (socket) => {
     }
   });
 
+
+  // ─── WEBRTC CALL SIGNALING ─────────────────────────────
+  // These events are required so the other user's browser actually receives
+  // the incoming call popup, WebRTC offer, answer, and ICE candidates.
+  socket.on("call:invite", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      const caller = await publicUser(sessionUser.id);
+      const members = await all(
+        `SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?`,
+        [chatId, sessionUser.id]
+      );
+
+      for (const member of members) {
+        io.to(`user:${member.user_id}`).emit("call:incoming", {
+          chatId,
+          fromUserId: sessionUser.id,
+          fromUser: caller,
+          callType: data.callType || "audio"
+        });
+      }
+
+      console.log(`Call invite from user ${sessionUser.id} to chat ${chatId}`);
+    } catch (err) {
+      console.error("call:invite error:", err);
+    }
+  });
+
+  socket.on("call:offer", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+
+      if (!toUserId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      const caller = await publicUser(sessionUser.id);
+
+      io.to(`user:${toUserId}`).emit("call:offer", {
+        chatId,
+        fromUserId: sessionUser.id,
+        fromUser: caller,
+        offer: data.offer,
+        callType: data.callType || "audio"
+      });
+
+      console.log(`Call offer from user ${sessionUser.id} to user ${toUserId} in chat ${chatId}`);
+    } catch (err) {
+      console.error("call:offer error:", err);
+    }
+  });
+
+  socket.on("call:answer", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+
+      if (!toUserId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      io.to(`user:${toUserId}`).emit("call:answer", {
+        chatId,
+        fromUserId: sessionUser.id,
+        answer: data.answer
+      });
+
+      console.log(`Call answer from user ${sessionUser.id} to user ${toUserId} in chat ${chatId}`);
+    } catch (err) {
+      console.error("call:answer error:", err);
+    }
+  });
+
+  socket.on("call:ice", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+
+      if (!toUserId || !data.candidate) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      io.to(`user:${toUserId}`).emit("call:ice", {
+        chatId,
+        fromUserId: sessionUser.id,
+        candidate: data.candidate
+      });
+    } catch (err) {
+      console.error("call:ice error:", err);
+    }
+  });
+
+  socket.on("call:end", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      const members = await all(
+        `SELECT user_id FROM chat_members WHERE chat_id = ? AND user_id != ?`,
+        [chatId, sessionUser.id]
+      );
+
+      for (const member of members) {
+        io.to(`user:${member.user_id}`).emit("call:end", {
+          chatId,
+          fromUserId: sessionUser.id
+        });
+      }
+
+      console.log(`Call ended by user ${sessionUser.id} in chat ${chatId}`);
+    } catch (err) {
+      console.error("call:end error:", err);
+    }
+  });
+
+  socket.on("call:decline", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      const toUserId = Number(data.toUserId);
+
+      if (!toUserId) return;
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!(await userCanAccessChat(toUserId, chatId))) return;
+
+      io.to(`user:${toUserId}`).emit("call:declined", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      console.log(`Call declined by user ${sessionUser.id} to user ${toUserId} in chat ${chatId}`);
+    } catch (err) {
+      console.error("call:decline error:", err);
+    }
+  });
+
   socket.on("message:send", async (data) => {
     try {
       const chatId = Number(data.chatId);
