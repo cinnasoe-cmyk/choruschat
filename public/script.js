@@ -1408,3 +1408,252 @@ if ($("forceRelayToggle")) {
     );
   };
 }
+
+
+/* ============================================================
+   RELAY AUDIO CALL MODE
+   This replaces WebRTC audio with server-relayed audio chunks.
+   It is less "crisp" than WebRTC but much easier to connect on
+   strict Wi-Fi/cellular networks because it uses your existing
+   HTTPS/WebSocket connection.
+============================================================ */
+let relayRecorder = null;
+let relayStream = null;
+let relayAudioQueue = [];
+let relayPlaying = false;
+let relayCallActive = false;
+let relayPeerUserId = null;
+
+function getSupportedRelayMime() {
+  const options = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4"
+  ];
+
+  for (const option of options) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(option)) return option;
+  }
+
+  return "";
+}
+
+async function startRelayVoice(chatId, peerUserId) {
+  relayPeerUserId = peerUserId || relayPeerUserId;
+  relayCallActive = true;
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("Your browser does not allow microphone access here. Use HTTPS and Chrome/Edge/Safari.");
+  }
+
+  if (!relayStream) {
+    relayStream = await getAudioStream();
+  }
+
+  const tracks = relayStream.getAudioTracks();
+  if (!tracks.length) {
+    throw new Error("No microphone track was provided by your browser.");
+  }
+
+  socket.emit("voice:join", { chatId });
+
+  if (relayRecorder && relayRecorder.state !== "inactive") return;
+
+  const mimeType = getSupportedRelayMime();
+  relayRecorder = new MediaRecorder(relayStream, mimeType ? { mimeType } : undefined);
+
+  relayRecorder.ondataavailable = async (event) => {
+    if (!relayCallActive || !event.data || event.data.size <= 0) return;
+
+    const arrayBuffer = await event.data.arrayBuffer();
+
+    socket.emit("voice:chunk", {
+      chatId,
+      mimeType: event.data.type || mimeType || "audio/webm",
+      chunk: arrayBuffer
+    });
+  };
+
+  relayRecorder.onerror = (event) => {
+    console.warn("Relay recorder error:", event);
+    toast("Mic stream error", "Your microphone stream stopped. End and restart the call.", "error", 7000);
+  };
+
+  relayRecorder.start(220);
+
+  $("callStatus").textContent = "connected";
+  $("callQuality").textContent = "relay audio";
+  toast("Relay audio connected", "This call is using server-relayed audio instead of WebRTC.", "success", 4500);
+}
+
+function stopRelayVoice(sendLeave = true) {
+  relayCallActive = false;
+
+  try {
+    if (relayRecorder && relayRecorder.state !== "inactive") relayRecorder.stop();
+  } catch {}
+
+  relayRecorder = null;
+
+  if (relayStream) {
+    relayStream.getTracks().forEach(track => track.stop());
+  }
+
+  relayStream = null;
+
+  if (sendLeave && activeCall.chatId) {
+    socket.emit("voice:leave", { chatId: activeCall.chatId });
+  }
+
+  relayAudioQueue = [];
+  relayPlaying = false;
+}
+
+function enqueueRelayAudio(arrayBuffer, mimeType) {
+  if (!relayCallActive && !$("callModal").classList.contains("hidden")) {
+    relayCallActive = true;
+  }
+
+  relayAudioQueue.push({ arrayBuffer, mimeType: mimeType || "audio/webm" });
+  playNextRelayChunk();
+}
+
+async function playNextRelayChunk() {
+  if (relayPlaying || !relayAudioQueue.length) return;
+
+  relayPlaying = true;
+  const item = relayAudioQueue.shift();
+
+  try {
+    const blob = new Blob([item.arrayBuffer], { type: item.mimeType });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.volume = (chorusSettings?.outputVolume ?? 100) / 100;
+    audio.playsInline = true;
+
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      relayPlaying = false;
+      playNextRelayChunk();
+    };
+
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      relayPlaying = false;
+      playNextRelayChunk();
+    };
+
+    await audio.play();
+  } catch (err) {
+    relayPlaying = false;
+    toast("Tap to enable audio", "Tap anywhere in the call window once so the browser allows audio playback.", "warn", 6000);
+    setTimeout(playNextRelayChunk, 300);
+  }
+}
+
+// Override call starter: send a normal call offer, but don't create WebRTC.
+startCall = async function(callType = "audio") {
+  if (!activeChatId) return toast("Open a chat first", "Choose a one-on-one DM before calling.", "warn");
+
+  const users = getCallableUsers(activeChatId);
+  if (!users.length) return toast("Nobody to call", "Add someone to this DM first.", "warn");
+
+  const currentChat = chats.find(c => Number(c.id) === Number(activeChatId));
+  if (currentChat && currentChat.type === "group") {
+    return toast("Group calls coming next", "Relay audio calls currently support one-on-one DMs.", "warn", 7000);
+  }
+
+  const firstUser = users[0];
+
+  try {
+    activeCall.chatId = activeChatId;
+    activeCall.peerUserId = firstUser.id;
+    activeCall.callType = "relay-audio";
+
+    showCallUI("chorus audio call", "ringing...", firstUser);
+    setAudioOnly(true);
+    $("incomingCallBox").classList.add("hidden");
+    startCallTone();
+
+    // Dummy offer: this powers the existing incoming call popup on the friend's side.
+    socket.emit("call:offer", {
+      chatId: activeChatId,
+      toUserId: firstUser.id,
+      offer: { type: "relay-audio", sdp: "chorus-relay-audio" },
+      callType: "relay-audio"
+    });
+
+    await startRelayVoice(activeChatId, firstUser.id);
+  } catch (err) {
+    toast("Call cannot start", err.message || "Microphone permission failed.", "error", 9000);
+    endCall(false);
+  }
+};
+
+// Override accept: no WebRTC answer needed, just start relay audio and notify caller.
+acceptIncomingCall = async function() {
+  stopCallTone();
+
+  const data = activeCall.incomingOffer;
+  if (!data) {
+    toast("Call is still loading", "Wait one second and tap Accept again.", "warn", 3000);
+    return;
+  }
+
+  try {
+    $("incomingCallBox").classList.add("hidden");
+    activeCall.chatId = data.chatId;
+    activeCall.peerUserId = data.fromUserId;
+    activeCall.callType = "relay-audio";
+
+    socket.emit("call:answer", {
+      chatId: data.chatId,
+      toUserId: data.fromUserId,
+      answer: { type: "relay-audio", sdp: "accepted" }
+    });
+
+    await startRelayVoice(data.chatId, data.fromUserId);
+  } catch (err) {
+    toast("Could not accept call", err.message || "Microphone permission failed.", "error", 9000);
+    declineIncomingCall();
+  }
+};
+
+// Wrap existing endCall so relay audio stops too.
+const chorusOldEndCall = endCall;
+endCall = function(send = true) {
+  stopRelayVoice(send);
+  chorusOldEndCall(send);
+};
+
+// Extra socket listeners for relay audio.
+(function setupRelayAudioSocketPatch() {
+  const oldConnectSocket = connectSocket;
+
+  connectSocket = function() {
+    oldConnectSocket();
+
+    socket.on("voice:chunk", (data) => {
+      if (Number(data.chatId) !== Number(activeCall.chatId)) return;
+      if (Number(data.fromUserId) === Number(me.id)) return;
+      enqueueRelayAudio(data.chunk, data.mimeType);
+    });
+
+    socket.on("voice:joined", (data) => {
+      if (Number(data.chatId) !== Number(activeCall.chatId)) return;
+      $("callStatus").textContent = "connected";
+      $("callQuality").textContent = "relay audio";
+    });
+
+    socket.on("voice:left", (data) => {
+      if (Number(data.chatId) !== Number(activeCall.chatId)) return;
+      toast("Call ended", "The other user left the voice call.", "info", 4000);
+      endCall(false);
+    });
+  };
+})();
+
+$("callModal").addEventListener("click", () => {
+  playNextRelayChunk();
+});
