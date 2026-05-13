@@ -1,7 +1,7 @@
 {
   "name": "chorus-railway",
-  "version": "2.9.0",
-  "description": "Chorus with fixed one-tap call connection, dedicated remote audio playback, and mobile layout support.",
+  "version": "3.0.0",
+  "description": "Chorus with server-provided TURN ICE servers and force relay option for reliable WebRTC calls.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
