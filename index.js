@@ -719,6 +719,64 @@ io.on("connection", async (socket) => {
   });
 
 
+
+  // ─── RELAY AUDIO CALLS ─────────────────────────────
+  // This is a non-WebRTC fallback. Audio is captured in small Opus/WebM chunks
+  // and relayed through Socket.IO. It works on hosts/networks where WebRTC fails.
+  socket.on("voice:join", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+
+      socket.join(`voice:${chatId}`);
+      const caller = await publicUser(sessionUser.id);
+
+      socket.to(`voice:${chatId}`).emit("voice:joined", {
+        chatId,
+        user: caller
+      });
+
+      console.log(`Voice relay join user ${sessionUser.id} chat ${chatId}`);
+    } catch (err) {
+      console.error("voice:join error:", err);
+    }
+  });
+
+  socket.on("voice:chunk", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!(await userCanAccessChat(sessionUser.id, chatId))) return;
+      if (!data.chunk) return;
+
+      socket.to(`voice:${chatId}`).emit("voice:chunk", {
+        chatId,
+        fromUserId: sessionUser.id,
+        chunk: data.chunk,
+        mimeType: data.mimeType || "audio/webm"
+      });
+    } catch (err) {
+      console.error("voice:chunk error:", err);
+    }
+  });
+
+  socket.on("voice:leave", async (data) => {
+    try {
+      const chatId = Number(data.chatId);
+      if (!chatId) return;
+
+      socket.leave(`voice:${chatId}`);
+      socket.to(`voice:${chatId}`).emit("voice:left", {
+        chatId,
+        fromUserId: sessionUser.id
+      });
+
+      console.log(`Voice relay leave user ${sessionUser.id} chat ${chatId}`);
+    } catch (err) {
+      console.error("voice:leave error:", err);
+    }
+  });
+
+
   // ─── WEBRTC CALL SIGNALING ─────────────────────────────
   // These events are required so the other user's browser actually receives
   // the incoming call popup, WebRTC offer, answer, and ICE candidates.
