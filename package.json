@@ -1,7 +1,7 @@
 {
   "name": "chorus-railway",
-  "version": "3.1.0",
-  "description": "Chorus with robust TURN setup, Metered domain normalization, secret-key support, and ICE debug endpoint.",
+  "version": "3.2.0",
+  "description": "Chorus with Socket.IO relay audio calls as a WebRTC-free fallback.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
