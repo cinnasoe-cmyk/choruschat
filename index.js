@@ -15,8 +15,9 @@ const io = new Server(server);
 const PORT = process.env.PORT || 20185;
 const SESSION_SECRET = process.env.SESSION_SECRET || "change-this-secret-key";
 
-const DATA_DIR = path.join(__dirname, "data");
-const UPLOAD_DIR = path.join(__dirname, "uploads");
+const STORAGE_DIR = process.env.STORAGE_DIR || __dirname;
+const DATA_DIR = path.join(STORAGE_DIR, "data");
+const UPLOAD_DIR = path.join(STORAGE_DIR, "uploads");
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -631,6 +632,6 @@ io.on("connection", async (socket) => {
 
 initDb().then(() => {
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`chorus running on http://prem-eu1.bot-hosting.net:${PORT}`);
+    console.log(`chorus running on port ${PORT}`);
   });
 });

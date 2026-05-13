@@ -1,7 +1,7 @@
 {
-  "name": "chorus-chat-app",
-  "version": "2.4.0",
-  "description": "Chorus with in-app toasts, no browser alerts, and clearer HTTPS call handling.",
+  "name": "chorus-railway",
+  "version": "2.5.0",
+  "description": "Chorus chat app ready for Railway deployment with persistent storage support.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -13,5 +13,8 @@
     "multer": "^1.4.5-lts.1",
     "socket.io": "^4.7.5",
     "sqlite3": "^5.1.7"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
