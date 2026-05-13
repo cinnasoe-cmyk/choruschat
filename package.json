@@ -1,7 +1,7 @@
 {
   "name": "chorus-railway",
-  "version": "3.2.0",
-  "description": "Chorus with Socket.IO relay audio calls as a WebRTC-free fallback.",
+  "version": "3.4.0",
+  "description": "Chorus relay call rebuild with direct relay:* signaling and hardwired client buttons.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
