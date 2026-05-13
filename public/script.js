@@ -1840,4 +1840,303 @@ connectSocket = function() {
 };
 
 // Now start the app only after every call override is installed.
+
+
+/* ============================================================
+   CHORUS RELAY CALLS V2 - HARD OVERRIDE
+   This bypasses every older call system and uses direct relay events.
+============================================================ */
+const ChorusRelayV2 = {
+  stream: null,
+  recorder: null,
+  active: false,
+  chatId: null,
+  peerId: null,
+  peerUser: null,
+  queue: [],
+  playing: false,
+  started: false
+};
+
+function relayV2Mime() {
+  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  for (const type of types) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
+  }
+  return "";
+}
+
+async function relayV2StartMic(chatId) {
+  if (!socket || !socket.connected) throw new Error("Realtime socket is not connected yet. Refresh both browsers.");
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("Microphone access is not available. Use the HTTPS Railway/Cloudflare domain.");
+  }
+
+  ChorusRelayV2.chatId = Number(chatId);
+  ChorusRelayV2.active = true;
+
+  if (!ChorusRelayV2.stream) {
+    ChorusRelayV2.stream = await getAudioStream();
+  }
+
+  if (!ChorusRelayV2.stream.getAudioTracks().length) {
+    throw new Error("No microphone track was found. Check your browser microphone permission.");
+  }
+
+  socket.emit("relay:join", { chatId: ChorusRelayV2.chatId });
+
+  if (ChorusRelayV2.recorder && ChorusRelayV2.recorder.state !== "inactive") return;
+
+  const mimeType = relayV2Mime();
+  ChorusRelayV2.recorder = new MediaRecorder(ChorusRelayV2.stream, mimeType ? { mimeType } : undefined);
+
+  ChorusRelayV2.recorder.ondataavailable = async (event) => {
+    if (!ChorusRelayV2.active || !event.data || event.data.size < 1) return;
+    const buffer = await event.data.arrayBuffer();
+
+    socket.emit("relay:audio", {
+      chatId: ChorusRelayV2.chatId,
+      mimeType: event.data.type || mimeType || "audio/webm",
+      chunk: buffer
+    });
+  };
+
+  ChorusRelayV2.recorder.start(250);
+  $("callStatus").textContent = "connected";
+  $("callQuality").textContent = "relay audio";
+}
+
+function relayV2Stop(send = true) {
+  ChorusRelayV2.active = false;
+
+  try {
+    if (ChorusRelayV2.recorder && ChorusRelayV2.recorder.state !== "inactive") ChorusRelayV2.recorder.stop();
+  } catch {}
+
+  ChorusRelayV2.recorder = null;
+
+  if (ChorusRelayV2.stream) {
+    ChorusRelayV2.stream.getTracks().forEach((track) => track.stop());
+  }
+
+  ChorusRelayV2.stream = null;
+
+  if (send && ChorusRelayV2.chatId && socket) {
+    socket.emit("relay:end", { chatId: ChorusRelayV2.chatId });
+  }
+
+  ChorusRelayV2.chatId = null;
+  ChorusRelayV2.peerId = null;
+  ChorusRelayV2.peerUser = null;
+  ChorusRelayV2.queue = [];
+  ChorusRelayV2.playing = false;
+}
+
+function relayV2EnqueueAudio(chunk, mimeType) {
+  ChorusRelayV2.queue.push({ chunk, mimeType: mimeType || "audio/webm" });
+  relayV2PlayNext();
+}
+
+async function relayV2PlayNext() {
+  if (ChorusRelayV2.playing || !ChorusRelayV2.queue.length) return;
+
+  ChorusRelayV2.playing = true;
+
+  const item = ChorusRelayV2.queue.shift();
+  const blob = new Blob([item.chunk], { type: item.mimeType });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio.volume = (chorusSettings?.outputVolume ?? 100) / 100;
+  audio.playsInline = true;
+
+  const done = () => {
+    URL.revokeObjectURL(url);
+    ChorusRelayV2.playing = false;
+    relayV2PlayNext();
+  };
+
+  audio.onended = done;
+  audio.onerror = done;
+
+  try {
+    await audio.play();
+  } catch (err) {
+    ChorusRelayV2.queue.unshift(item);
+    ChorusRelayV2.playing = false;
+    toast("Tap call window", "Your browser blocked audio playback. Tap inside the call window once.", "warn", 6000);
+  }
+}
+
+async function relayV2Call() {
+  if (!activeChatId) return toast("Open a DM first", "Choose a one-on-one DM before calling.", "warn");
+
+  const users = getCallableUsers(activeChatId);
+  if (!users.length) return toast("Nobody to call", "Add someone to this DM first.", "warn");
+
+  const chat = chats.find((c) => Number(c.id) === Number(activeChatId));
+  if (chat?.type === "group") {
+    return toast("One-on-one only", "Relay audio calls currently support DMs only.", "warn", 6000);
+  }
+
+  const friend = users[0];
+  ChorusRelayV2.chatId = Number(activeChatId);
+  ChorusRelayV2.peerId = friend.id;
+  ChorusRelayV2.peerUser = friend;
+
+  activeCall.chatId = Number(activeChatId);
+  activeCall.peerUserId = friend.id;
+
+  showCallUI("chorus audio call", "calling...", friend);
+  setAudioOnly(true);
+  $("incomingCallBox").classList.add("hidden");
+  $("callQuality").textContent = "relay audio";
+  startCallTone();
+
+  socket.emit("relay:call", { chatId: Number(activeChatId) });
+  toast("Calling", `Calling ${friend.display_name}...`, "info", 3500);
+}
+
+async function relayV2Accept() {
+  const incoming = ChorusRelayV2.incoming;
+  if (!incoming) return toast("No call found", "Ask them to call again.", "warn");
+
+  try {
+    stopCallTone();
+
+    ChorusRelayV2.chatId = Number(incoming.chatId);
+    ChorusRelayV2.peerId = incoming.fromUserId;
+    ChorusRelayV2.peerUser = incoming.fromUser;
+
+    activeCall.chatId = Number(incoming.chatId);
+    activeCall.peerUserId = incoming.fromUserId;
+
+    $("incomingCallBox").classList.add("hidden");
+    showCallUI("chorus audio call", "connecting...", incoming.fromUser);
+    setAudioOnly(true);
+    $("callQuality").textContent = "relay audio";
+
+    socket.emit("relay:accept", {
+      chatId: Number(incoming.chatId),
+      toUserId: incoming.fromUserId
+    });
+
+    await relayV2StartMic(incoming.chatId);
+    $("callStatus").textContent = "connected";
+    ChorusRelayV2.incoming = null;
+  } catch (err) {
+    toast("Could not accept call", err.message || "Microphone permission failed.", "error", 9000);
+    relayV2Stop(true);
+    $("callModal").classList.add("hidden");
+  }
+}
+
+function relayV2Decline() {
+  stopCallTone();
+
+  if (ChorusRelayV2.incoming) {
+    socket.emit("relay:decline", {
+      chatId: Number(ChorusRelayV2.incoming.chatId),
+      toUserId: ChorusRelayV2.incoming.fromUserId
+    });
+  }
+
+  ChorusRelayV2.incoming = null;
+  $("incomingCallBox").classList.add("hidden");
+  $("callModal").classList.add("hidden");
+}
+
+function relayV2WireSocket() {
+  if (!socket || socket._chorusRelayV2Wired) return;
+  socket._chorusRelayV2Wired = true;
+
+  socket.on("relay:incoming", (data) => {
+    console.log("[relay:incoming]", data);
+
+    ChorusRelayV2.incoming = data;
+    activeCall.chatId = Number(data.chatId);
+    activeCall.peerUserId = data.fromUserId;
+
+    startCallTone();
+    showCallUI("incoming chorus call", "incoming...", data.fromUser);
+    setAudioOnly(true);
+    $("incomingCallText").textContent = `${data.fromUser.display_name} is calling you`;
+    $("incomingCallBox").classList.remove("hidden");
+    $("callQuality").textContent = "relay audio";
+
+    toast("Incoming call", `${data.fromUser.display_name} is calling you.`, "success", 9000);
+  });
+
+  socket.on("relay:accepted", async (data) => {
+    console.log("[relay:accepted]", data);
+
+    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
+
+    try {
+      stopCallTone();
+      $("callStatus").textContent = "connecting...";
+      await relayV2StartMic(data.chatId);
+      $("callStatus").textContent = "connected";
+    } catch (err) {
+      toast("Call failed", err.message || "Microphone permission failed.", "error", 9000);
+      relayV2Stop(true);
+      $("callModal").classList.add("hidden");
+    }
+  });
+
+  socket.on("relay:declined", (data) => {
+    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
+    toast("Call declined", "They declined your call.", "warn", 4500);
+    relayV2Stop(false);
+    $("callModal").classList.add("hidden");
+  });
+
+  socket.on("relay:audio", (data) => {
+    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
+    if (Number(data.fromUserId) === Number(me.id)) return;
+    relayV2EnqueueAudio(data.chunk, data.mimeType);
+  });
+
+  socket.on("relay:end", (data) => {
+    if (Number(data.chatId) !== Number(ChorusRelayV2.chatId)) return;
+    toast("Call ended", "The other user ended the call.", "info", 3500);
+    relayV2Stop(false);
+    $("callModal").classList.add("hidden");
+  });
+}
+
+const chorusConnectSocketBeforeRelayV2 = connectSocket;
+connectSocket = function() {
+  chorusConnectSocketBeforeRelayV2();
+  setTimeout(relayV2WireSocket, 50);
+};
+
+const chorusEndCallBeforeRelayV2 = endCall;
+endCall = function(send = true) {
+  relayV2Stop(send);
+  stopCallTone();
+  chorusEndCallBeforeRelayV2(false);
+};
+
+window.addEventListener("load", () => {
+  setTimeout(() => {
+    const audioBtn = $("audioCallBtn");
+    const acceptBtn = $("acceptCallBtn");
+    const declineBtn = $("declineCallBtn");
+    const endBtn = $("endCallBtn");
+    const screenBtn = $("screenShareBtn");
+    const callModal = $("callModal");
+
+    if (audioBtn) audioBtn.onclick = relayV2Call;
+    if (acceptBtn) acceptBtn.onclick = relayV2Accept;
+    if (declineBtn) declineBtn.onclick = relayV2Decline;
+    if (endBtn) endBtn.onclick = () => endCall(true);
+    if (screenBtn) screenBtn.onclick = () => toast("Screen share disabled", "Audio relay mode does not support screen share yet.", "warn", 6000);
+    if (callModal) callModal.addEventListener("click", relayV2PlayNext);
+
+    console.log("Chorus Relay V2 wired");
+  }, 250);
+});
+
+// Start the app after all relay overrides are installed.
 checkSession();
