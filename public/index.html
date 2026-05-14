@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Chorus</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="auth" class="auth">
+    <div class="card">
+      <div class="brand"><div class="logo">c</div><div><h1>chorus</h1><p>private chat for your circle</p></div></div>
+      <div class="tabs"><button id="showLogin" class="on">Login</button><button id="showReg">Register</button></div>
+      <form id="loginForm"><input id="loginUser" placeholder="username"><input id="loginPass" type="password" placeholder="password"><button>Enter Chorus</button></form>
+      <form id="regForm" class="hide"><input id="regUser" placeholder="claim username"><input id="regDisplay" placeholder="display name"><input id="regPass" type="password" placeholder="password"><button>Claim Account</button></form>
+      <p id="authErr" class="err"></p>
+    </div>
+  </div>
+
+  <main id="app" class="app hide">
+    <aside class="rail"><button class="guild">c</button><button id="mobileMenu" class="guild mob">☰</button><button id="settingsBtn" class="guild bottom">⚙</button></aside>
+    <aside id="side" class="side">
+      <div class="head"><h2>chorus</h2><button id="newGroup">＋</button></div>
+      <h3>DMs</h3><div id="chatList"></div>
+      <h3>Friends</h3><div class="add"><input id="friendUser" placeholder="username"><button id="addFriend">Add</button></div>
+      <div id="requests"></div><div id="friendList"></div>
+      <div id="self" class="self"><img id="selfPic"><div><b id="selfName"></b><small id="selfUser"></small></div></div>
+    </aside>
+    <section class="chat">
+      <header><button id="mobileBack" class="mob">☰</button><img id="chatPic"><div><h2 id="chatTitle">Select a chat</h2><p id="chatSub">Add a friend to start.</p></div><button id="callBtn">Call</button><button id="clearBtn" class="danger">Clear</button></header>
+      <div id="messages" class="messages"></div>
+      <form id="composer"><button type="button" id="emoji">☺</button><input id="msgInput" placeholder="Message chorus"><button>Send</button></form>
+    </section>
+  </main>
+
+  <div id="profile" class="modal hide"><div class="modal-card"><button class="x">×</button><h2>Profile</h2><img id="profilePic" class="big"><label class="file">Upload picture<input id="avatarFile" type="file" accept="image/*"></label><input id="displayName" placeholder="display name"><textarea id="bio" placeholder="bio"></textarea><button id="saveProfile">Save</button><button id="logout" class="ghost">Logout</button></div></div>
+  <div id="settings" class="modal hide"><div class="modal-card"><button class="x">×</button><h2>Settings</h2><label>Message volume<input id="msgVol" type="range" min="0" max="100"></label><label>Call volume<input id="callVol" type="range" min="0" max="100"></label><label>Microphone<select id="mic"></select></label><label>Speaker<select id="speaker"></select></label><button id="refreshDevices">Refresh devices</button><p class="hint">Calls use WebRTC. Add TURN variables in Railway for the most reliable connection.</p></div></div>
+  <div id="group" class="modal hide"><div class="modal-card"><button class="x">×</button><h2>New group</h2><input id="groupName" placeholder="group name"><div id="groupFriends"></div><button id="createGroup">Create</button></div></div>
+
+  <div id="call" class="call hide"><div class="call-card"><div class="call-top"><div><h2 id="callTitle">Call</h2><p id="callStatus">starting</p></div><button id="endCall" class="danger">End</button></div><div class="call-mid"><img id="callPic"><audio id="remoteAudio" autoplay playsinline></audio></div><div id="incoming" class="incoming hide"><button id="accept">Accept</button><button id="decline" class="danger">Decline</button></div><button id="mute">Mute</button></div></div>
+  <div id="toasts"></div>
+  <script src="/socket.io/socket.io.js"></script><script src="/app.js"></script>
+</body>
+</html>
